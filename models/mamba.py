@@ -7,9 +7,10 @@ from models.classification_utils import SequenceClassifierHead, to_bcl
 try:
     from mamba_ssm import Mamba
 except Exception as e:
-    raise ImportError(
-        "mamba_ssm 没装或导入失败。请先安装：pip install mamba-ssm"
-    ) from e
+    Mamba = None
+    _MAMBA_IMPORT_ERROR = e
+else:
+    _MAMBA_IMPORT_ERROR = None
 
 
 class _SeqNorm(nn.Module):
@@ -58,6 +59,11 @@ class Model(nn.Module):
         norm: bool = True,
     ):
         super().__init__()
+        if Mamba is None:
+            raise ImportError(
+                "mamba_ssm 没装或导入失败。只有使用 --model mamba 时才需要安装："
+                "pip install mamba-ssm"
+            ) from _MAMBA_IMPORT_ERROR
         self.task_name = str(getattr(configs, "task_name", "long_term_forecast"))
         self.num_classes = int(getattr(configs, "num_classes", 2))
 
