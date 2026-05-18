@@ -43,6 +43,7 @@ def plot_rolling_forecast(
     raw_seq=None,
     pred_len: int = None,
     title: str = None,
+    max_points: int = 30000,
 ):
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
@@ -55,17 +56,33 @@ def plot_rolling_forecast(
     if raw_seq is not None:
         raw_seq = np.asarray(raw_seq).reshape(-1)[:L]
 
+    x = np.arange(L)
+    if max_points > 0 and L > max_points:
+        step = max(1, int(np.ceil(L / max_points)))
+        x_plot = x[::step]
+        true_plot = true_seq[::step]
+        pred_plot = pred_seq[::step]
+        raw_plot = raw_seq[::step] if raw_seq is not None else None
+    else:
+        step = 1
+        x_plot = x
+        true_plot = true_seq
+        pred_plot = pred_seq
+        raw_plot = raw_seq
+
     plt.figure(figsize=(15, 6))
-    if raw_seq is not None:
-        plt.plot(raw_seq, linewidth=0.7, alpha=0.28, label="Raw")
-    plt.plot(true_seq, linewidth=2, alpha=0.6, label="Ground Truth")
-    plt.plot(pred_seq, linestyle="--", linewidth=1.5, label="Prediction")
+    if raw_plot is not None:
+        plt.plot(x_plot, raw_plot, linewidth=0.7, alpha=0.25, label="Raw")
+    plt.plot(x_plot, true_plot, linewidth=1.8, alpha=0.65, label="Ground Truth")
+    plt.plot(x_plot, pred_plot, linestyle="--", linewidth=1.2, label="Prediction")
 
     if pred_len is not None and pred_len > 1 and (L // int(pred_len) <= 200):
         for i in range(0, L, int(pred_len)):
             plt.axvline(x=i, linestyle=":", alpha=0.15)
 
     if title:
+        if step > 1:
+            title = f"{title}\nOverview plot downsampled for readability: every {step} points"
         plt.title(title)
 
     plt.legend()
@@ -118,6 +135,7 @@ def plot_prediction_zoom_panels(
     raw_seq=None,
     title: str | None = None,
     window_size: int = 400,
+    num_panels: int = 6,
 ):
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
@@ -135,17 +153,14 @@ def plot_prediction_zoom_panels(
         raw_seq = raw_seq[:L]
 
     window = max(1, min(int(window_size), L))
-    starts = sorted(
-        set(
-            [
-                0,
-                max(0, L // 2 - window // 2),
-                max(0, L - window),
-            ]
-        )
-    )
+    if L <= window:
+        starts = [0]
+    else:
+        panel_count = max(3, min(int(num_panels), int(np.ceil(L / window))))
+        starts = np.linspace(0, L - window, num=panel_count, dtype=np.int64).tolist()
+        starts = sorted(set(int(s) for s in starts))
 
-    fig, axes = plt.subplots(len(starts), 1, figsize=(15, 3.5 * len(starts)), sharey=False)
+    fig, axes = plt.subplots(len(starts), 1, figsize=(15, 3.2 * len(starts)), sharey=False)
     if not isinstance(axes, np.ndarray):
         axes = np.asarray([axes])
 
@@ -428,7 +443,7 @@ def run_rolling_inference_and_plot(
     )
 
     zoom_path = os.path.join(save_dir, "prediction_zoom.png")
-    zoom_window = min(400, max(50, len(pred_seq_raw) // 5))
+    zoom_window = min(len(pred_seq_raw), max(400, int(pred_len) * 2))
     plot_prediction_zoom_panels(
         save_path=zoom_path,
         true_seq=true_seq_raw,
@@ -436,6 +451,7 @@ def run_rolling_inference_and_plot(
         raw_seq=raw_seq,
         title=f"{setting}\nLocal Zoom Views",
         window_size=zoom_window,
+        num_panels=6,
     )
 
     metrics_path = os.path.join(save_dir, "point_metrics.json")
