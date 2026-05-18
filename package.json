@@ -1,0 +1,21 @@
+{
+  "name": "ts-forecast",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "export:zenodo-timeseries": "node analysis/export_zenodo_timeseries_csv.mjs",
+    "inspect:zenodo-timeseries": "node analysis/inspect_zenodo_timeseries.mjs",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "ssh://yihang@10.26.6.58:45/home/yihang/git/ts-forecast.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "h5wasm": "^0.10.1"
+  }
+}

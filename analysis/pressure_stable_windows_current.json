@@ -1,0 +1,14 @@
+{
+  "cond00_BR_0p315": {
+    "time_start": 0.160,
+    "time_end": 0.500
+  },
+  "cond01_BR_0p63": {
+    "time_start": 0.160,
+    "time_end": 0.500
+  },
+  "cond03_BR_1p26": {
+    "time_start": 0.190,
+    "time_end": 0.256932
+  }
+}
