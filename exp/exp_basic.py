@@ -4,7 +4,7 @@ import torch.nn as nn
 
 # 导入“模型模块”（注意：是模块，不是类）
 #from models import full_res_tcn
-from models import cnn_lstm , CRNN, GRU, fast_tcn ,Fullrestcn,spectral,inceptiontime,Dlinear,PatchTST,mamba,timemixer,tcn_claude,timemixer_claude,risk_cnn
+from models import cnn_lstm , CRNN, GRU, fast_tcn ,Fullrestcn,spectral,inceptiontime,Dlinear,PatchTST,mamba,timemixer,tcn_claude,timemixer_claude,risk_cnn,smooth_pecnet
 import os
 
 class Exp_Basic:
@@ -26,6 +26,7 @@ class Exp_Basic:
             "mamba":mamba,
             "timemixer":timemixer,
             "tcn_claude":tcn_claude,
+            "smooth_pecnet": smooth_pecnet,
             "timemixer_claude":timemixer_claude,
             "risk_cnn": risk_cnn,
 

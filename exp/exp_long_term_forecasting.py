@@ -1,4 +1,5 @@
 # exp/exp_long_term_forecasting.py
+import json
 import os
 import numpy as np
 import torch
@@ -88,6 +89,9 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
     def train(self, setting):
         ckpt_dir = self._make_ckpt_dir(setting)
+        args_path = os.path.join(ckpt_dir, "run_args.json")
+        with open(args_path, "w", encoding="utf-8") as f:
+            json.dump(vars(self.args), f, ensure_ascii=False, indent=2, sort_keys=True, default=str)
 
         _, train_loader, scaler = self._get_data("train")
         val_loader = None

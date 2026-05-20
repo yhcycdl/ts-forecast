@@ -4,6 +4,7 @@ import hashlib
 import os
 import random
 import re
+from datetime import datetime
 import numpy as np
 import torch
 
@@ -78,6 +79,14 @@ def _build_setting(args, ii: int) -> str:
     if model_id:
         base += f"_id{_sanitize_tag(model_id, max_len=32)}"
 
+    run_tag = getattr(args, "run_tag", None)
+    if run_tag:
+        base += f"_tag{_sanitize_tag(run_tag, max_len=32)}"
+
+    run_stamp = getattr(args, "run_stamp", None)
+    if run_stamp:
+        base += f"_t{_sanitize_tag(run_stamp, max_len=16)}"
+
     return f"{base}_{ii}"
 
 def main():
@@ -89,6 +98,12 @@ def main():
     parser.add_argument("--is_training", type=int, default=1)
     parser.add_argument("--itr", type=int, default=1)
     parser.add_argument("--seed", type=int, default=2026)
+    parser.add_argument("--run_tag", type=str, default=None,
+                        help="optional human-readable tag appended to the checkpoint directory")
+    parser.add_argument("--run_stamp", type=str, default=None,
+                        help="optional fixed timestamp/run id appended to the checkpoint directory")
+    parser.add_argument("--timestamp_setting", type=int, default=1,
+                        help="1 appends YYYYmmdd-HHMMSS to training checkpoint directories when --run_stamp is not set")
 
     # ===== data =====
     parser.add_argument("--root_path", type=str, default="./data/zenodo_timeseries_csv/")
@@ -208,6 +223,11 @@ def main():
                         help="tcn_claude frequency branch embedding dimension")
     parser.add_argument("--use_revin", type=int, default=1,
                         help="tcn_claude: 1 enables RevIN instance normalization")
+    parser.add_argument("--smoothpec_window", type=int, default=1,
+                        help="smooth_pecnet causal moving-average window in samples; 1 disables smoothing")
+    parser.add_argument("--smoothpec_mode", type=str, default="smooth_raw",
+                        choices=["smooth_raw", "raw_smooth", "smooth_residual", "smooth_only"],
+                        help="smooth_pecnet input arrangement before the TCN backbone")
 
     # ===== risk classification =====
     parser.add_argument("--num_classes", type=int, default=2, choices=[2, 3])
@@ -255,6 +275,13 @@ def main():
             args.target = out_cols[0]
 
     set_seed(args.seed)
+
+    if (
+        not getattr(args, "run_stamp", None)
+        and int(getattr(args, "timestamp_setting", 1))
+        and int(getattr(args, "is_training", 1))
+    ):
+        args.run_stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 
     args.use_gpu = bool(args.use_gpu) and torch.cuda.is_available()
     if args.use_gpu and args.use_multi_gpu:
