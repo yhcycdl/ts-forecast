@@ -136,6 +136,8 @@ def main():
                         help="total: 按全数据比例切 train/val/test；legacy_rest: 兼容旧逻辑，在剩余集上再切 val")
 
     parser.add_argument("--stride", type=int, default=67)
+    parser.add_argument("--eval_stride", type=int, default=-1,
+                        help="stride for val/test windows when split_col is used; -1 means pred_len, 0 means use --stride")
     parser.add_argument("--seq_len", type=int, default=4096)
     parser.add_argument("--pred_len", type=int, default=128)
     parser.add_argument("--target_shift", type=int, default=0,

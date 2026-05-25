@@ -162,7 +162,13 @@ def _split_column_arrays(args, values, split_labels, segment_labels, flag, sampl
     mask = np.char.lower(split_labels.astype(str)) == flag
     target_shift = int(getattr(args, "target_shift", 0))
     window_mode = str(getattr(args, "window_mode", "past")).lower()
-    start_stride = int(getattr(args, "stride", 1)) if flag == "train" else int(getattr(args, "pred_len", 1))
+    if flag == "train":
+        start_stride = int(getattr(args, "stride", 1))
+    else:
+        eval_stride = int(getattr(args, "eval_stride", -1))
+        start_stride = int(getattr(args, "stride", 1)) if eval_stride == 0 else eval_stride
+        if start_stride < 1:
+            start_stride = int(getattr(args, "pred_len", 1))
 
     chunks = []
     weight_chunks = []
