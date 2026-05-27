@@ -5,8 +5,10 @@ import argparse
 from pathlib import Path
 
 try:
+    import numpy as np
     import pandas as pd
 except ModuleNotFoundError:  # Keep --help usable on minimal local environments.
+    np = None
     pd = None
 
 
@@ -55,13 +57,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = _build_parser().parse_args()
-    if pd is None:
-        raise RuntimeError("This script requires pandas. Install it in the training environment first.")
+    if pd is None or np is None:
+        raise RuntimeError("This script requires numpy and pandas. Install them in the training environment first.")
 
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from matplotlib.colors import BoundaryNorm, ListedColormap
 
     cluster_dir = Path(args.cluster_dir)
     output_dir = Path(args.output_dir) if args.output_dir is not None else cluster_dir
@@ -94,6 +97,8 @@ def main() -> None:
         if len(records) == 1:
             axes = [axes]
 
+        cmap = ListedColormap(plt.get_cmap("tab10").colors[:k])
+        norm = BoundaryNorm(np.arange(-0.5, k + 0.5, 1), cmap.N)
         scatter = None
         for ax, record in zip(axes, records, strict=True):
             sub = labels[labels["record_id"] == record].copy()
@@ -118,7 +123,8 @@ def main() -> None:
                 centers,
                 [y_band] * len(centers),
                 c=clusters,
-                cmap="tab10",
+                cmap=cmap,
+                norm=norm,
                 s=args.point_size,
                 marker="s",
                 alpha=0.9,
@@ -132,8 +138,12 @@ def main() -> None:
 
         axes[-1].set_xlabel("time (s)")
         if scatter is not None:
-            fig.colorbar(scatter, ax=axes, label="cluster")
-        fig.tight_layout()
+            fig.subplots_adjust(right=0.90, hspace=0.35)
+            cax = fig.add_axes([0.92, 0.18, 0.018, 0.64])
+            cbar = fig.colorbar(scatter, cax=cax, ticks=list(range(k)))
+            cbar.set_label("cluster")
+        else:
+            fig.tight_layout()
         out_path = output_dir / f"cluster_timeline_k{k}.png"
         fig.savefig(out_path, dpi=180)
         plt.close(fig)
