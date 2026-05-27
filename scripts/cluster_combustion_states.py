@@ -397,7 +397,7 @@ def _save_example_plot(
             q_mean = np.mean(q, axis=1)
             q_plot = (q_mean - np.mean(q_mean)) / (np.std(q_mean) + 1e-12)
             ax.plot(x, q_plot, lw=0.8, alpha=0.75, label="qdot mean (z)")
-        ax.set_title(f"cluster={row['cluster']} | {Path(source).name} | t={t0:.5f}-{t1:.5f}s")
+        ax.set_title(f"cluster={int(labels[row_idx])} | {Path(source).name} | t={t0:.5f}-{t1:.5f}s")
         ax.grid(alpha=0.25)
         ax.legend(loc="upper right")
     axes[-1, 0].set_xlabel("time in window (ms)")
