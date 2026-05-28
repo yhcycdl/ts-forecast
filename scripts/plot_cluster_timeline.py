@@ -51,7 +51,20 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default=None, help="Defaults to --cluster-dir.")
     parser.add_argument("--fig-width", type=float, default=18.0)
     parser.add_argument("--row-height", type=float, default=4.0)
+    parser.add_argument(
+        "--label-style",
+        choices=["span", "point", "both"],
+        default="span",
+        help="Draw cluster labels as window spans, center points, or both.",
+    )
     parser.add_argument("--point-size", type=float, default=12.0)
+    parser.add_argument("--label-alpha", type=float, default=0.9, help="Opacity for the label band.")
+    parser.add_argument(
+        "--label-band-frac",
+        type=float,
+        default=0.045,
+        help="Height of the label band as a fraction of the y-axis range.",
+    )
     return parser
 
 
@@ -64,6 +77,7 @@ def main() -> None:
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from matplotlib.cm import ScalarMappable
     from matplotlib.colors import BoundaryNorm, ListedColormap
 
     cluster_dir = Path(args.cluster_dir)
@@ -99,7 +113,9 @@ def main() -> None:
 
         cmap = ListedColormap(plt.get_cmap("tab10").colors[:k])
         norm = BoundaryNorm(np.arange(-0.5, k + 0.5, 1), cmap.N)
-        scatter = None
+        colorbar_artist = None
+        discrete_mappable = ScalarMappable(norm=norm, cmap=cmap)
+        discrete_mappable.set_array([])
         for ax, record in zip(axes, records, strict=True):
             sub = labels[labels["record_id"] == record].copy()
             csv_path = sub["source_csv"].iloc[0]
@@ -116,20 +132,45 @@ def main() -> None:
             )
 
             ymin, ymax = ax.get_ylim()
-            y_band = ymin + 0.06 * (ymax - ymin)
+            y_range = ymax - ymin
+            band_height = max(args.label_band_frac * y_range, 1e-12)
+            y_band = ymin + 0.04 * y_range
             centers = (sub["time_start"].to_numpy() + sub["time_end"].to_numpy()) / 2.0
             clusters = sub["cluster"].to_numpy()
-            scatter = ax.scatter(
-                centers,
-                [y_band] * len(centers),
-                c=clusters,
-                cmap=cmap,
-                norm=norm,
-                s=args.point_size,
-                marker="s",
-                alpha=0.9,
-                label="cluster label",
-            )
+            if args.label_style in {"span", "both"}:
+                label_added = False
+                for cluster_id in range(k):
+                    cluster_sub = sub[sub["cluster"] == cluster_id]
+                    if cluster_sub.empty:
+                        continue
+                    spans = [
+                        (float(row.time_start), float(row.time_end - row.time_start))
+                        for row in cluster_sub.itertuples(index=False)
+                    ]
+                    ax.broken_barh(
+                        spans,
+                        (y_band, band_height),
+                        facecolors=[cmap(norm(cluster_id))],
+                        edgecolors="none",
+                        alpha=args.label_alpha,
+                        label="cluster label" if not label_added else None,
+                    )
+                    label_added = True
+                    colorbar_artist = discrete_mappable
+
+            if args.label_style in {"point", "both"}:
+                scatter = ax.scatter(
+                    centers,
+                    [y_band + 0.5 * band_height] * len(centers),
+                    c=clusters,
+                    cmap=cmap,
+                    norm=norm,
+                    s=args.point_size,
+                    marker="s",
+                    alpha=args.label_alpha,
+                    label="cluster label" if args.label_style == "point" else None,
+                )
+                colorbar_artist = scatter
 
             ax.set_title(f"{record} | K={k}")
             ax.set_ylabel("pressure")
@@ -137,10 +178,10 @@ def main() -> None:
             ax.legend(loc="upper right")
 
         axes[-1].set_xlabel("time (s)")
-        if scatter is not None:
+        if colorbar_artist is not None:
             fig.subplots_adjust(right=0.90, hspace=0.35)
             cax = fig.add_axes([0.92, 0.18, 0.018, 0.64])
-            cbar = fig.colorbar(scatter, cax=cax, ticks=list(range(k)))
+            cbar = fig.colorbar(colorbar_artist, cax=cax, ticks=list(range(k)))
             cbar.set_label("cluster")
         else:
             fig.tight_layout()
