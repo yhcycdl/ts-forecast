@@ -205,7 +205,13 @@ def _read_wfdb_records(root: Path, dataset: str, wanted: list[str]) -> list[Sign
         fs = float(fields.get("fs", 1.0))
         if not sig_names:
             sig_names = [f"ch{i}" for i in range(signals.shape[1])]
-        selected_names = _match_columns(sig_names, wanted) if wanted else [sig_names[0]]
+        if wanted:
+            try:
+                selected_names = _match_columns(sig_names, wanted)
+            except ValueError:
+                continue
+        else:
+            selected_names = [sig_names[0]]
         for name in selected_names:
             idx = sig_names.index(name)
             records.append(
