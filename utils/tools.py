@@ -1,5 +1,5 @@
-# utils/tools.py
 import json
+import csv
 import torch
 import matplotlib.pyplot as plt
 import os 
@@ -295,6 +295,185 @@ def _pearson_corr(a, b) -> float:
     return float(np.corrcoef(a, b)[0, 1])
 
 
+def _local_rms_np(values, window: int) -> np.ndarray:
+    x = np.asarray(values, dtype=np.float64).reshape(-1)
+    if x.size == 0:
+        return x
+    window = max(1, int(window))
+    if window <= 1:
+        return np.abs(x)
+    left = (window - 1) // 2
+    right = window - 1 - left
+    padded = np.pad(np.square(x), (left, right), mode="edge")
+    kernel = np.ones(window, dtype=np.float64) / float(window)
+    return np.sqrt(np.maximum(np.convolve(padded, kernel, mode="valid"), 0.0))
+
+
+def _dominant_fft_info(values) -> dict:
+    x = np.asarray(values, dtype=np.float64).reshape(-1)
+    mask = np.isfinite(x)
+    x = x[mask]
+    if x.size < 4 or float(np.std(x)) <= 1e-12:
+        return {"dominant_bin": 0, "dominant_period_samples": float("nan"), "dominant_energy_ratio": 0.0}
+    y = x - float(np.mean(x))
+    amp = np.abs(np.fft.rfft(y))
+    if amp.size <= 1:
+        return {"dominant_bin": 0, "dominant_period_samples": float("nan"), "dominant_energy_ratio": 0.0}
+    amp[0] = 0.0
+    total = float(np.sum(amp))
+    if total <= 1e-20:
+        return {"dominant_bin": 0, "dominant_period_samples": float("nan"), "dominant_energy_ratio": 0.0}
+    idx = int(np.argmax(amp))
+    period = float(x.size / idx) if idx > 0 else float("nan")
+    return {
+        "dominant_bin": idx,
+        "dominant_period_samples": period,
+        "dominant_energy_ratio": float(amp[idx] / total),
+    }
+
+
+def _normalized_spectrum(values) -> np.ndarray:
+    x = np.asarray(values, dtype=np.float64).reshape(-1)
+    if x.size < 4:
+        return np.zeros(1, dtype=np.float64)
+    y = x - float(np.nanmean(x))
+    amp = np.abs(np.fft.rfft(y))
+    if amp.size > 0:
+        amp[0] = 0.0
+    total = float(np.sum(amp))
+    if total <= 1e-20:
+        return np.zeros_like(amp, dtype=np.float64)
+    return amp / total
+
+
+def _simple_peaks(z: np.ndarray, distance: int) -> np.ndarray:
+    if z.size < 3:
+        return np.asarray([], dtype=np.int64)
+    candidates = np.where((z[1:-1] > z[:-2]) & (z[1:-1] >= z[2:]) & (z[1:-1] > 0.5))[0] + 1
+    if candidates.size <= 1:
+        return candidates.astype(np.int64)
+    order = candidates[np.argsort(z[candidates])[::-1]]
+    kept: list[int] = []
+    for idx in order:
+        if all(abs(int(idx) - prev) >= distance for prev in kept):
+            kept.append(int(idx))
+    return np.asarray(sorted(kept), dtype=np.int64)
+
+
+def _find_prominent_peaks(values, period_samples: float) -> np.ndarray:
+    x = np.asarray(values, dtype=np.float64).reshape(-1)
+    if x.size < 3:
+        return np.asarray([], dtype=np.int64)
+    med = float(np.nanmedian(x))
+    mad = float(np.nanmedian(np.abs(x - med)))
+    scale = 1.4826 * mad if mad > 1e-12 else float(np.nanstd(x))
+    if scale <= 1e-12:
+        return np.asarray([], dtype=np.int64)
+    z = (x - med) / scale
+    if not np.isfinite(period_samples) or period_samples <= 1:
+        distance = 1
+    else:
+        distance = max(1, int(round(float(period_samples) * 0.35)))
+    try:
+        from scipy import signal
+
+        peaks, _ = signal.find_peaks(z, distance=distance, prominence=0.5)
+        return peaks.astype(np.int64)
+    except Exception:
+        return _simple_peaks(z, distance)
+
+
+def _nearest_peak_stats(true_peaks: np.ndarray, pred_peaks: np.ndarray, tolerance: float) -> dict:
+    true_peaks = np.asarray(true_peaks, dtype=np.int64).reshape(-1)
+    pred_peaks = np.asarray(pred_peaks, dtype=np.int64).reshape(-1)
+    if true_peaks.size == 0 or pred_peaks.size == 0:
+        return {
+            "peak_time_mae_samples": float("nan"),
+            "peak_hit_rate": 0.0 if true_peaks.size else float("nan"),
+        }
+    errors = []
+    hits = 0
+    for peak in true_peaks:
+        err = float(np.min(np.abs(pred_peaks - int(peak))))
+        errors.append(err)
+        if err <= tolerance:
+            hits += 1
+    return {
+        "peak_time_mae_samples": float(np.mean(errors)),
+        "peak_hit_rate": float(hits / max(1, true_peaks.size)),
+    }
+
+
+def _quasiperiodic_structure_metrics(true_seq, pred_seq, pred_len: int) -> dict:
+    true_seq = np.asarray(true_seq, dtype=np.float64).reshape(-1)
+    pred_seq = np.asarray(pred_seq, dtype=np.float64).reshape(-1)
+    L = min(true_seq.size, pred_seq.size)
+    true_seq = true_seq[:L]
+    pred_seq = pred_seq[:L]
+    if L < 4:
+        return {}
+
+    true_fft = _dominant_fft_info(true_seq)
+    pred_fft = _dominant_fft_info(pred_seq)
+    period_true = float(true_fft["dominant_period_samples"])
+    period_pred = float(pred_fft["dominant_period_samples"])
+    if np.isfinite(period_true) and np.isfinite(period_pred):
+        period_error = abs(period_pred - period_true)
+        period_rel_error = period_error / max(abs(period_true), 1e-12)
+    else:
+        period_error = float("nan")
+        period_rel_error = float("nan")
+
+    spec_true = _normalized_spectrum(true_seq)
+    spec_pred = _normalized_spectrum(pred_seq)
+    spec_len = min(spec_true.size, spec_pred.size)
+    spectral_l1 = float(np.sum(np.abs(spec_true[:spec_len] - spec_pred[:spec_len])))
+
+    env_window = max(3, int(round(period_true / 4.0))) if np.isfinite(period_true) and period_true > 1 else max(3, int(pred_len))
+    env_window = min(max(3, env_window), max(3, L))
+    true_env = _local_rms_np(true_seq - np.mean(true_seq), env_window)
+    pred_env = _local_rms_np(pred_seq - np.mean(pred_seq), env_window)
+    envelope_mae = float(np.mean(np.abs(pred_env - true_env)))
+    envelope_rel_mae = float(envelope_mae / max(float(np.mean(np.abs(true_env))), 1e-12))
+
+    true_peaks = _find_prominent_peaks(true_seq, period_true)
+    pred_peaks = _find_prominent_peaks(pred_seq, period_true)
+    tolerance = max(1.0, 0.25 * period_true) if np.isfinite(period_true) and period_true > 1 else max(1.0, 0.25 * pred_len)
+    peak_stats = _nearest_peak_stats(true_peaks, pred_peaks, tolerance=tolerance)
+
+    return {
+        "dominant_period_true_samples": period_true,
+        "dominant_period_pred_samples": period_pred,
+        "dominant_period_error_samples": period_error,
+        "dominant_period_relative_error": period_rel_error,
+        "dominant_energy_ratio_true": float(true_fft["dominant_energy_ratio"]),
+        "dominant_energy_ratio_pred": float(pred_fft["dominant_energy_ratio"]),
+        "spectral_energy_l1": spectral_l1,
+        "envelope_mae": envelope_mae,
+        "envelope_relative_mae": envelope_rel_mae,
+        "peak_count_true": int(true_peaks.size),
+        "peak_count_pred": int(pred_peaks.size),
+        "peak_count_error": int(pred_peaks.size - true_peaks.size),
+        **peak_stats,
+    }
+
+
+def _save_rolling_values_csv(path: str, true_raw, pred_raw, true_norm, pred_norm, raw_seq=None) -> None:
+    true_raw = np.asarray(true_raw).reshape(-1)
+    pred_raw = np.asarray(pred_raw).reshape(-1)
+    true_norm = np.asarray(true_norm).reshape(-1)
+    pred_norm = np.asarray(pred_norm).reshape(-1)
+    raw_seq = None if raw_seq is None else np.asarray(raw_seq).reshape(-1)
+    L = min(true_raw.size, pred_raw.size, true_norm.size, pred_norm.size)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["index", "true_raw", "pred_raw", "true_norm", "pred_norm", "raw_overlay"])
+        for i in range(L):
+            raw_value = "" if raw_seq is None or i >= raw_seq.size else float(raw_seq[i])
+            writer.writerow([i, float(true_raw[i]), float(pred_raw[i]), float(true_norm[i]), float(pred_norm[i]), raw_value])
+
+
 @torch.no_grad()
 def run_rolling_inference_and_plot(
     model,
@@ -413,6 +592,7 @@ def run_rolling_inference_and_plot(
     mae_norm = float(np.mean(np.abs(pred_seq_norm - true_seq_norm)))
     pearson_raw = _pearson_corr(true_seq_raw, pred_seq_raw)
     pearson_norm = _pearson_corr(true_seq_norm, pred_seq_norm)
+    qp_metrics = _quasiperiodic_structure_metrics(true_seq_raw, pred_seq_raw, pred_len=int(pred_len))
 
     fig_path = os.path.join(save_dir, plot_filename)
     target_desc = f"target={target_name}" if target_name else f"out_ch={out0}"
@@ -455,6 +635,8 @@ def run_rolling_inference_and_plot(
     )
 
     metrics_path = os.path.join(save_dir, "point_metrics.json")
+    values_path = os.path.join(save_dir, "rolling_forecast_values.csv")
+    _save_rolling_values_csv(values_path, true_seq_raw, pred_seq_raw, true_seq_norm, pred_seq_norm, raw_seq=raw_seq)
     diagnostics = {
         "mse_raw": mse_raw,
         "mse_norm": mse_norm,
@@ -466,6 +648,8 @@ def run_rolling_inference_and_plot(
         "scatter_plot": scatter_path,
         "zoom_plot": zoom_path,
         "metrics_json": metrics_path,
+        "values_csv": values_path,
+        **qp_metrics,
     }
     with open(metrics_path, "w", encoding="utf-8") as f:
         json.dump(diagnostics, f, ensure_ascii=False, indent=2)

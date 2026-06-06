@@ -269,6 +269,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         print(f"Saved zoom plot: {diagnostics['zoom_plot']}")
         print(f"Pearson(raw): {diagnostics['pearson_raw']:.6f}")
         print(f"MAE(raw): {diagnostics['mae_raw']:.9f}")
+        print(f"Saved rolling values csv: {diagnostics['values_csv']}")
         print(f"Saved metrics json: {diagnostics['metrics_json']}")
 
     def _load_plot_raw_overlay(self):

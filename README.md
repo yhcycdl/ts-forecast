@@ -12,6 +12,7 @@ raw spike-perfect reconstruction.
    `scripts/recommend_qp_config.py`.
 4. Train forecasting baselines and the main TCN model with `run.py`.
 5. Compare predictions with point metrics and rolling forecast plots.
+6. Summarize experiment results into paper-ready metric tables.
 
 ## Active Code Surface
 
@@ -21,6 +22,7 @@ raw spike-perfect reconstruction.
 - Signal profiling: `scripts/analyze_quasiperiodic_profile.py`.
 - Cycle-adaptive experiment recommendation: `scripts/recommend_qp_config.py`.
 - Feature-aware augmentation: `scripts/augment_quasiperiodic_dataset.py`.
+- Experiment metric summary: `scripts/summarize_forecast_metrics.py`.
 - Optional analysis/plotting helpers remain under `scripts/`, but old risk-label
   and broken `src.data`-based scripts have been removed from the active branch.
 
@@ -222,3 +224,25 @@ python run.py \
   single-input/single-output or one-to-one input/output columns.
 - Training now rejects prediction/target shape mismatches instead of allowing
   PyTorch broadcasting. If a run errors there, the old metric was not reliable.
+
+## Result Summary
+
+Each test run saves:
+
+- `rolling_forecast.png`, `prediction_scatter.png`, `prediction_zoom.png`
+- `rolling_forecast_values.csv`: raw-scale and normalized prediction/target
+  sequences for later plotting or re-analysis.
+- `point_metrics.json`: point metrics plus quasi-periodic structure metrics.
+
+Structure metrics include dominant-period error, spectral-energy L1 distance,
+envelope relative MAE, peak count error, peak timing MAE, and peak hit rate.
+These are the metrics to use when arguing that a model preserves quasi-periodic
+structure instead of only lowering MSE.
+
+To collect all finished checkpoint results:
+
+```bash
+python scripts/summarize_forecast_metrics.py \
+  --root ./checkpoints \
+  --output ./outputs/forecast_metrics_summary.csv
+```
