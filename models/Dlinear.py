@@ -63,10 +63,16 @@ class Model(nn.Module):
 
         self.individual = bool(getattr(configs, "individual", False))
 
-        # 预测哪些通道：默认全部
+        # 预测哪些输入分支：默认取前 c_out 个分支，避免 enc_in > c_out 时
+        # 输出多通道被单通道 target 静默广播。
         out_indices = getattr(configs, "out_indices", None)
         if out_indices is None:
-            self.out_indices = list(range(self.in_channels))
+            if self.out_channels > self.in_channels:
+                raise ValueError(
+                    f"DLinear cannot output {self.out_channels} channels from "
+                    f"{self.in_channels} input channels without explicit out_indices."
+                )
+            self.out_indices = list(range(self.out_channels))
         else:
             self.out_indices = list(out_indices)
 

@@ -38,6 +38,7 @@ args 可选：
   top_k_freq   (int,   default=128)  取前k个频率分量
   freq_dim     (int,   default=128)  频域特征维度
   use_revin    (int,   default=1)    是否使用实例归一化
+  residual_output (int, default=1)    是否输出 last_value + delta
 """
 
 import math
@@ -225,6 +226,7 @@ class Model(nn.Module):
         top_k_freq   = int(getattr(args,   "top_k_freq",   128))
         freq_dim     = int(getattr(args,   "freq_dim",     128))
         self.use_revin = bool(getattr(args, "use_revin",   1))
+        self.residual_output = bool(getattr(args, "residual_output", 1))
 
         # ── RevIN ───────────────────────────────────────────
         if self.use_revin:
@@ -310,8 +312,9 @@ class Model(nn.Module):
         delta = self.decoder(fused)                       # (B, P*C_out)
         delta = delta.view(-1, self.pred_len, self.out_channels)  # (B, P, C_out)
 
-        # 6. 残差输出：预测 = 最后已知值 + delta
-        out = last_val + delta                            # (B, P, C_out)
+        # 6. 残差输出：预测 = 最后已知值 + delta。
+        # raw->smooth 或不同物理量预测时可用 --residual_output 0 关闭该先验。
+        out = last_val + delta if self.residual_output else delta  # (B, P, C_out)
 
         # 7. RevIN 反归一化（还原到原始尺度）
         if self.use_revin:

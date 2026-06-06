@@ -8,7 +8,7 @@ class WindowDataset(Dataset):
     input series: (T,C) or (T,)
     returns:
       x: (C_in, seq_len)
-      y: (pred_len, C_out)  # 注意：你的 FullResTCN 输出是 (B,1,pred_len)，要对齐你 loss/metric
+      y: (pred_len, C_out)
     """
     def __init__(
         self,
@@ -54,7 +54,25 @@ class WindowDataset(Dataset):
         self.out_indices = np.asarray(out_indices, dtype=np.int64).reshape(-1)
 
         T = self.series.shape[0]
+        for name, indices in (("in_indices", self.in_indices), ("out_indices", self.out_indices)):
+            if indices.size == 0:
+                raise ValueError(f"{name} cannot be empty.")
+            if np.any(indices < 0) or np.any(indices >= n_channels):
+                raise ValueError(f"{name} out of range for {n_channels} channels: {indices.tolist()}")
+
         if self.start_indices is not None:
+            if np.any(self.start_indices < 0):
+                raise ValueError("start_indices cannot contain negative values.")
+            if self.window_mode == "center":
+                y_end = self.start_indices + self.center_left + self.pred_len
+            else:
+                y_end = self.start_indices + self.seq_len + self.target_shift + self.pred_len
+            if np.any(y_end > T):
+                bad = int(self.start_indices[np.argmax(y_end > T)])
+                raise ValueError(
+                    "start_indices contain an out-of-bounds forecast window: "
+                    f"start={bad}, y_end={int(y_end.max())}, series_len={T}."
+                )
             self.n_samples = int(self.start_indices.size)
         else:
             if self.window_mode == "center":
@@ -80,7 +98,6 @@ class WindowDataset(Dataset):
         w = None if self.sample_weights is None else self.sample_weights[y_start:e]
 
         x = x.transpose(0, 1).contiguous()  # (C, seq_len)
-        # y 先保持 (pred_len,C)，HybridLoss 里你可以决定怎么用
         if w is None:
             return x, y
         if w.dim() == 1:

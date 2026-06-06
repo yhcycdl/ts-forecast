@@ -25,6 +25,72 @@ def _sanitize_tag(value: str, max_len: int = 48) -> str:
     return text[:max_len]
 
 
+def _parse_cols(value):
+    if value is None:
+        return None
+    cols = [c.strip() for c in str(value).split(",") if c.strip()]
+    return cols if cols else None
+
+
+def _looks_like_same_waveform(input_col: str, output_col: str) -> bool:
+    a = input_col.lower()
+    b = output_col.lower()
+    if a == b:
+        return True
+    if ("raw" in a) != ("raw" in b):
+        return False
+    smooth_tokens = ("smooth", "ma", "cma")
+    if any(t in a for t in smooth_tokens) and any(t in b for t in smooth_tokens):
+        return True
+    return False
+
+
+def _validate_experiment_args(args) -> None:
+    input_cols = _parse_cols(getattr(args, "input_cols", None))
+    output_cols = _parse_cols(getattr(args, "output_cols", None))
+    if input_cols is not None or output_cols is not None:
+        if not input_cols or not output_cols:
+            raise ValueError("Explicit IO requires both --input_cols and --output_cols.")
+        if int(args.enc_in) != len(input_cols):
+            raise ValueError(
+                f"--enc_in={args.enc_in} does not match --input_cols count={len(input_cols)} "
+                f"({input_cols})."
+            )
+        if int(args.c_out) != len(output_cols):
+            raise ValueError(
+                f"--c_out={args.c_out} does not match --output_cols count={len(output_cols)} "
+                f"({output_cols})."
+            )
+
+        same_first = _looks_like_same_waveform(input_cols[0], output_cols[0])
+        if args.model == "tcn_claude" and not same_first:
+            if int(getattr(args, "residual_output", 1)):
+                print(
+                    "[WARN] tcn_claude residual_output assumes the first input channel and target "
+                    "are the same waveform quantity. For raw->smooth or other transformed targets, "
+                    "prefer --residual_output 0 or use smooth_pecnet with a smooth first branch."
+                )
+            if int(getattr(args, "use_revin", 1)):
+                print(
+                    "[WARN] tcn_claude RevIN denormalizes with input-window statistics. "
+                    "This is safest for smooth->smooth / same-quantity forecasting; "
+                    "for raw->smooth, consider --use_revin 0 together with --residual_output 0."
+                )
+
+        if args.model in {"DLinear", "PatchTST"} and len(input_cols) != len(output_cols):
+            print(
+                f"[WARN] {args.model} is a baseline with weak semantic mapping for "
+                "multi-input -> fewer-output explicit IO. Use single-input experiments or "
+                "keep input/output column order one-to-one for clean baseline comparisons."
+            )
+
+        if str(args.loss).lower() == "hybrid" and float(getattr(args, "cont_weight", 0.0)) > 0 and not same_first:
+            print(
+                "[WARN] hybrid cont_weight > 0 enforces boundary continuity between the first "
+                "input channel and target. For raw->smooth/event targets, set --cont_weight 0."
+            )
+
+
 def _build_setting(args, ii: int) -> str:
     data_tag = _sanitize_tag(os.path.splitext(os.path.basename(args.data_path))[0], max_len=32)
     output_cols = getattr(args, "output_cols", None)
@@ -168,6 +234,10 @@ def main():
     parser.add_argument("--fft_weight", type=float, default=0.1)
     parser.add_argument("--deriv_weight", type=float, default=1.0)
     parser.add_argument("--cont_weight", type=float, default=5.0)
+    parser.add_argument("--hybrid_phase_weight", type=float, default=0.0,
+                        help="optional wrapped FFT phase penalty inside hybrid loss; default 0 keeps frequency loss magnitude-only")
+    parser.add_argument("--huber_beta", type=float, default=0.3)
+    parser.add_argument("--wmse_alpha", type=float, default=1.0)
 
     # ===== optim/train =====
     parser.add_argument("--train_epochs", type=int, default=40)
@@ -175,6 +245,8 @@ def main():
     parser.add_argument("--weight_decay", type=float, default=1e-4)
     parser.add_argument("--max_grad_norm", type=float, default=1.0)
     parser.add_argument("--use_amp", action="store_true", default=True)
+    parser.add_argument("--no_amp", action="store_true", default=False,
+                        help="disable automatic mixed precision even on CUDA")
     parser.add_argument('--optimizer',type=str, default='Adamw',help='optimizer')
     parser.add_argument("--momentum", type=float, default=0.9)
 
@@ -208,19 +280,21 @@ def main():
     parser.add_argument("--use_norm", type=int, default=1)
     parser.add_argument("--c_out", type=int, default=1)
     parser.add_argument("--kernel_size", type=int, default=3,
-                        help="tcn_claude/FullResTCN temporal kernel size; larger values increase receptive field")
+                        help="tcn_claude temporal kernel size; larger values increase receptive field")
     parser.add_argument("--num_layers", type=int, default=11,
-                        help="tcn_claude/FullResTCN requested dilated TCN layers")
+                        help="tcn_claude requested dilated TCN layers")
     parser.add_argument("--base_ch", type=int, default=32,
-                        help="tcn_claude/FullResTCN base channel width")
+                        help="tcn_claude base channel width")
     parser.add_argument("--max_ch", type=int, default=256,
-                        help="tcn_claude/FullResTCN max channel width")
+                        help="tcn_claude max channel width")
     parser.add_argument("--top_k_freq", type=int, default=128,
                         help="tcn_claude frequency branch low-frequency bins")
     parser.add_argument("--freq_dim", type=int, default=128,
                         help="tcn_claude frequency branch embedding dimension")
     parser.add_argument("--use_revin", type=int, default=1,
                         help="tcn_claude: 1 enables RevIN instance normalization")
+    parser.add_argument("--residual_output", type=int, default=1,
+                        help="tcn_claude: 1 predicts last input value + delta; 0 predicts direct output")
     parser.add_argument("--smoothpec_window", type=int, default=1,
                         help="smooth_pecnet causal moving-average window in samples; 1 disables smoothing")
     parser.add_argument("--smoothpec_mode", type=str, default="smooth_raw",
@@ -240,6 +314,10 @@ def main():
             raise ValueError("--output_cols was provided but no valid column names were parsed.")
         if len(out_cols) == 1:
             args.target = out_cols[0]
+
+    _validate_experiment_args(args)
+    if getattr(args, "no_amp", False):
+        args.use_amp = False
 
     set_seed(args.seed)
 

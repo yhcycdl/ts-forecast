@@ -36,7 +36,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         if sample_weight is None:
             return criterion(pred, y)
 
-        _, sample_weight = _align_pred_target(pred, sample_weight)
+        _, sample_weight = _align_pred_target(pred, sample_weight, strict=False)
         sample_weight = sample_weight.to(pred.dtype)
         if self._loss_name == "mse":
             loss_tensor = (pred - y) ** 2
@@ -112,7 +112,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         best_path = os.path.join(ckpt_dir, "best.pt")
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True) if self.args.patience > 0 else None
 
-        use_amp = bool(self.args.use_amp)
+        use_amp = bool(self.args.use_amp) and self.device.type == "cuda"
         scaler_amp = torch.cuda.amp.GradScaler(enabled=use_amp)
 
         print("Start Training...")
@@ -206,7 +206,27 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         scaler_path = os.path.join(ckpt_dir, "scaler.npz")
 
         # load model
-        state = torch.load(best_path, map_location=self.device)
+        load_path = best_path
+        if not os.path.exists(load_path):
+            pretrained_path = getattr(self.args, "pretrained_path", None)
+            if test and pretrained_path:
+                if not os.path.exists(pretrained_path):
+                    raise FileNotFoundError(f"pretrained_path not found: {pretrained_path}")
+                load_path = pretrained_path
+                print(f"Using --pretrained_path for test: {load_path}")
+                print(
+                    "Note: test data normalization is still fitted from the current CSV train split. "
+                    "For strict zero-shot evaluation, build the test CSV with source-domain train rows "
+                    "and target-domain test rows, or keep the scaler source consistent."
+                )
+            else:
+                raise FileNotFoundError(
+                    f"best checkpoint not found: {best_path}. "
+                    "Use the same run_stamp/model_id as the training run, or pass "
+                    "--pretrained_path with --is_training 0 for direct evaluation."
+                )
+
+        state = torch.load(load_path, map_location=self.device)
         self.model.load_state_dict(state)
         self.model.eval()
 

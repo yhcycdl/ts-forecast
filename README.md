@@ -110,3 +110,17 @@ python run.py \
   --plot_raw_col raw \
   --gpu 1
 ```
+
+## Correctness Notes
+
+- `tcn_claude`/QPWave-TCN is safest for same-quantity main-wave forecasting,
+  for example `input_smooth -> target_smooth` or `p_input_ma1024 -> p_target_cma1024`.
+- For `raw -> smooth`, avoid forcing the model to continue from the raw last
+  value. Use `--residual_output 0 --use_revin 0`, or use `smooth_pecnet`
+  with `--smoothpec_mode smooth_raw` so the smooth branch is first.
+- `hybrid` loss keeps the FFT term magnitude-only by default. If input and
+  target are not the same waveform quantity, set `--cont_weight 0`.
+- `DLinear` and `PatchTST` are baselines. For clean comparisons, run them with
+  single-input/single-output or one-to-one input/output columns.
+- Training now rejects prediction/target shape mismatches instead of allowing
+  PyTorch broadcasting. If a run errors there, the old metric was not reliable.

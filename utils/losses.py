@@ -3,13 +3,15 @@ import torch
 import torch.nn as nn
 
 
-def _align_pred_target(pred: torch.Tensor, target: torch.Tensor):
+def _align_pred_target(pred: torch.Tensor, target: torch.Tensor, strict: bool = True):
     """
     对齐 pred/target 的常见形状差异，避免因为维度不一致报错。
     支持：
       pred:   (B,1,P) 或 (B,P) 或 (B,P,1) 或 (B,P,C)
       target: (B,P,1) 或 (B,1,P) 或 (B,P) 或 (B,P,C)
-    返回：shape 尽量与 pred 一致的 (pred, target)
+    返回：shape 尽量与 pred 一致的 (pred, target)。
+    strict=True 时会拒绝 PyTorch 广播，避免多输出模型被单通道 target
+    静默广播后得到虚假的 loss/metric。
     """
     # pred/target 都是三维且刚好互为转置: (B,C,P) <-> (B,P,C)
     if pred.dim() == 3 and target.dim() == 3:
@@ -29,6 +31,13 @@ def _align_pred_target(pred: torch.Tensor, target: torch.Tensor):
             target = target.squeeze(-1)
         elif target.dim() == 3 and target.shape[1] == 1:         # (B,1,P) -> (B,P)
             target = target.squeeze(1)
+
+    if strict and tuple(pred.shape) != tuple(target.shape):
+        raise ValueError(
+            "Prediction/target shape mismatch after alignment: "
+            f"pred={tuple(pred.shape)}, target={tuple(target.shape)}. "
+            "Check --enc_in/--c_out and explicit --input_cols/--output_cols."
+        )
 
     return pred, target
 
@@ -62,16 +71,17 @@ def _first_step(pred: torch.Tensor, time_dim: int) -> torch.Tensor:
 
 class HybridLoss(nn.Module):
     """
-    混合 loss：时间域 L1 + 导数 MSE + 频域幅值/相位 L1 + 边界斜率连续性
+    混合 loss：时间域 L1 + 导数 MSE + 频域幅值约束 + 可选相位/边界连续性
     注意：需要额外输入 x_input（历史窗口）来做连续性约束
     """
-    def __init__(self, fft_weight=0.1, deriv_weight=1.0, cont_weight=5.0):
+    def __init__(self, fft_weight=0.1, deriv_weight=1.0, cont_weight=5.0, phase_weight=0.0):
         super().__init__()
         self.l1 = nn.L1Loss()
         self.mse = nn.MSELoss()
         self.fft_weight = float(fft_weight)
         self.deriv_weight = float(deriv_weight)
         self.cont_weight = float(cont_weight)
+        self.phase_weight = float(phase_weight)
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor, x_input: torch.Tensor):
         pred, target = _align_pred_target(pred, target)
@@ -85,32 +95,46 @@ class HybridLoss(nn.Module):
         target_d1 = torch.diff(target, dim=time_dim)
         loss_deriv = self.mse(pred_d1, target_d1)
 
-        # 3) 频域（幅值 + 相位）
+        # 3) 频域。默认只约束幅值谱；直接 L1 比较 FFT angle 会被相位环绕干扰。
         pred_fft = torch.fft.rfft(pred, dim=time_dim)
         target_fft = torch.fft.rfft(target, dim=time_dim)
-        loss_freq = self.l1(torch.abs(pred_fft), torch.abs(target_fft)) + \
-                    self.l1(torch.angle(pred_fft), torch.angle(target_fft))
+        loss_freq = self.l1(torch.abs(pred_fft), torch.abs(target_fft))
+        if self.phase_weight > 0:
+            phase_diff = torch.angle(pred_fft * torch.conj(target_fft))
+            loss_freq = loss_freq + self.phase_weight * torch.mean(torch.abs(phase_diff))
 
         # 4) 边界斜率连续性：hist 最后斜率 vs pred 第一步斜率
-        hist_last = x_input[..., -1]
-        hist_prev = x_input[..., -2]
-        pred_first = _first_step(pred, time_dim)
+        loss_cont = pred.new_tensor(0.0)
+        if self.cont_weight > 0:
+            if x_input is None:
+                raise ValueError("HybridLoss cont_weight > 0 requires x_input.")
+            if x_input.shape[-1] < 2:
+                raise ValueError("HybridLoss continuity term requires at least 2 input time steps.")
 
-        if hist_last.dim() == 1:
-            hist_last = hist_last.unsqueeze(-1)
-            hist_prev = hist_prev.unsqueeze(-1)
-        if pred_first.dim() == 1:
-            pred_first = pred_first.unsqueeze(-1)
+            hist_last = x_input[..., -1]
+            hist_prev = x_input[..., -2]
+            pred_first = _first_step(pred, time_dim)
 
-        # 当输出通道数少于输入通道数时，默认取前几个输入通道对齐。
-        # 当前数据集列顺序是 P1..P7,Q，预测 P1 时这会正确落在第 0 通道。
-        out_channels = int(pred_first.shape[1])
-        hist_last = hist_last[:, :out_channels]
-        hist_prev = hist_prev[:, :out_channels]
+            if hist_last.dim() == 1:
+                hist_last = hist_last.unsqueeze(-1)
+                hist_prev = hist_prev.unsqueeze(-1)
+            if pred_first.dim() == 1:
+                pred_first = pred_first.unsqueeze(-1)
 
-        hist_slope = hist_last - hist_prev
-        pred_slope = pred_first - hist_last
-        loss_cont = self.mse(pred_slope, hist_slope)
+            # 连续性项只适合“输入第一批通道”和输出是同一物理量的场景。
+            # raw->smooth、raw->event 等任务应把 cont_weight 设为 0。
+            out_channels = int(pred_first.shape[1])
+            if hist_last.shape[1] < out_channels:
+                raise ValueError(
+                    "HybridLoss continuity term needs at least as many input channels as output channels: "
+                    f"input={hist_last.shape[1]}, output={out_channels}."
+                )
+            hist_last = hist_last[:, :out_channels]
+            hist_prev = hist_prev[:, :out_channels]
+
+            hist_slope = hist_last - hist_prev
+            pred_slope = pred_first - hist_last
+            loss_cont = self.mse(pred_slope, hist_slope)
 
         return loss_time + self.deriv_weight * loss_deriv + self.fft_weight * loss_freq + self.cont_weight * loss_cont
 
@@ -138,6 +162,7 @@ def build_criterion(args):
             fft_weight=getattr(args, "fft_weight", 0.1),
             deriv_weight=getattr(args, "deriv_weight", 1.0),
             cont_weight=getattr(args, "cont_weight", 5.0),
+            phase_weight=getattr(args, "hybrid_phase_weight", 0.0),
         )
 
     if name == "mse":
