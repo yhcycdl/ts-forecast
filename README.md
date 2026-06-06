@@ -28,6 +28,7 @@ raw spike-perfect reconstruction.
 - Cycle-adaptive experiment recommendation: `scripts/recommend_qp_config.py`.
 - Feature-aware augmentation: `scripts/augment_quasiperiodic_dataset.py`.
 - Experiment metric summary: `scripts/summarize_forecast_metrics.py`.
+- Literature-to-module rationale: `docs/literature_module_map.md`.
 - Optional analysis/plotting helpers remain under `scripts/`, but old risk-label
   and broken `src.data`-based scripts have been removed from the active branch.
 
@@ -231,7 +232,8 @@ This writes:
 - `recommended_qp_config.json`: dataset-level and type-level recommended
   periods, `seq_len`, `pred_len`, stride, smoothing window, and module.
 - `recommended_train_commands.sh`: runnable commands for QPWave-TCN, DLinear,
-  PatchTST, SmoothPECNet, and `qpenhanced_tcn` when an enhanced CSV is provided.
+  PatchTST, CycleResidual-TCN, SmoothPECNet, and `qpenhanced_tcn` when an
+  enhanced CSV is provided.
 
 Default policy is roughly `10` past cycles as input and `3-4` future cycles as
 output. Weak-periodic boundary cases are intentionally shortened because they
@@ -277,12 +279,15 @@ python run.py \
 
 - `tcn_claude`/QPWave-TCN is safest for same-quantity main-wave forecasting,
   for example `input_smooth -> target_smooth` or `p_input_ma1024 -> p_target_cma1024`.
+- `cycle_residual_tcn` adds a cycle-template prior before the TCN correction.
+  Use it when the profile reports a clear dominant period, and pass
+  `--period_len` from `dominant_period_samples`.
 - For `raw -> smooth`, avoid forcing the model to continue from the raw last
   value. Use `--residual_output 0 --use_revin 0`, or use `smooth_pecnet`
   with `--smoothpec_mode smooth_raw` so the smooth branch is first.
 - For feature-aware runs, use `--model qpenhanced_tcn` with enhanced `qp_*`
   input columns and `--loss qp_hybrid`. This keeps the same QPWave-TCN backbone
-  but adds channel gating and event/envelope/frequency-aware loss terms.
+  but adds channel gating and event/envelope/frequency/shape-aware loss terms.
 - `hybrid` loss keeps the FFT term magnitude-only by default. If input and
   target are not the same waveform quantity, set `--cont_weight 0`.
 - `DLinear` and `PatchTST` are baselines. For clean comparisons, run them with

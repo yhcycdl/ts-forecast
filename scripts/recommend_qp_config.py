@@ -39,12 +39,12 @@ TYPE_ENHANCED_INPUTS = {
 }
 
 TYPE_QP_LOSS_WEIGHTS = {
-    "stable_single_freq": (0.5, 0.1, 0.02, 0.0),
-    "noisy_single_freq": (0.5, 0.3, 0.05, 0.2),
-    "am_fm_modulated": (0.4, 1.0, 0.05, 0.0),
-    "spike_event": (1.0, 0.2, 0.05, 2.0),
-    "multi_freq": (0.4, 0.3, 0.2, 0.0),
-    "weak_periodic": (0.2, 0.2, 0.05, 0.0),
+    "stable_single_freq": {"deriv": 0.5, "env": 0.1, "band": 0.02, "event": 0.0, "corr": 0.2, "multi": 0.1, "peak": 0.0},
+    "noisy_single_freq": {"deriv": 0.5, "env": 0.3, "band": 0.05, "event": 0.2, "corr": 0.2, "multi": 0.3, "peak": 0.0},
+    "am_fm_modulated": {"deriv": 0.4, "env": 1.0, "band": 0.05, "event": 0.0, "corr": 0.2, "multi": 0.3, "peak": 0.0},
+    "spike_event": {"deriv": 1.0, "env": 0.2, "band": 0.05, "event": 2.0, "corr": 0.2, "multi": 0.1, "peak": 1.0},
+    "multi_freq": {"deriv": 0.4, "env": 0.3, "band": 0.2, "event": 0.0, "corr": 0.1, "multi": 0.2, "peak": 0.0},
+    "weak_periodic": {"deriv": 0.2, "env": 0.2, "band": 0.05, "event": 0.0, "corr": 0.1, "multi": 0.2, "peak": 0.0},
 }
 
 
@@ -222,6 +222,24 @@ def _build_commands(args: argparse.Namespace, cfg: dict) -> list[dict]:
     ])
     commands.append({"name": "QPWave-TCN smooth->smooth", "command": _format_command(tcn)})
 
+    if cfg["signal_type"] != "weak_periodic":
+        cycle_id = f"{prefix}_{cfg['signal_type']}_cycleres_sl{cfg['seq_len']}_pl{cfg['pred_len']}"
+        cycle = _command_common(args, cfg, "cycle_residual_tcn", cycle_id, args.input_col, args.output_col)
+        cycle_mode = "mean" if cfg["signal_type"] in {"stable_single_freq", "noisy_single_freq", "multi_freq"} else "last"
+        cycle_count = 3 if cycle_mode == "mean" else 1
+        cycle.extend([
+            f"--kernel_size {cfg['kernel_size']}",
+            f"--num_layers {cfg['num_layers']}",
+            "--d_model 128",
+            "--d_ff 256",
+            "--dropout 0.1",
+            f"--period_len {max(1, int(round(cfg['dominant_period_samples'])))}",
+            f"--cycle_base_cycles {cycle_count}",
+            f"--cycle_base_mode {cycle_mode}",
+            "--cycle_backbone_revin 0",
+        ])
+        commands.append({"name": "CycleResidual-TCN cycle-template prior", "command": _format_command(cycle)})
+
     dlinear_id = f"{prefix}_{cfg['signal_type']}_dlinear_sl{cfg['seq_len']}_pl{cfg['pred_len']}"
     dlinear = _command_common(args, cfg, "DLinear", dlinear_id, args.input_col, args.output_col)
     dlinear.extend([f"--moving_avg {max(3, cfg['smooth_window_samples'])}", "--individual 0"])
@@ -260,7 +278,7 @@ def _build_commands(args: argparse.Namespace, cfg: dict) -> list[dict]:
 
     if args.enhanced_csv:
         enhanced_input_cols = args.enhanced_input_cols or TYPE_ENHANCED_INPUTS.get(cfg["signal_type"], "qp_main_input")
-        deriv_w, env_w, band_w, event_w = TYPE_QP_LOSS_WEIGHTS.get(
+        weights = TYPE_QP_LOSS_WEIGHTS.get(
             cfg["signal_type"],
             TYPE_QP_LOSS_WEIGHTS["noisy_single_freq"],
         )
@@ -284,10 +302,14 @@ def _build_commands(args: argparse.Namespace, cfg: dict) -> list[dict]:
             "--residual_output 1",
             "--qpenhance_gate 1",
             "--qpenhance_gate_hidden 32",
-            f"--qp_deriv_weight {deriv_w}",
-            f"--qp_envelope_weight {env_w}",
-            f"--qp_band_weight {band_w}",
-            f"--qp_event_weight {event_w}",
+            f"--qp_deriv_weight {weights['deriv']}",
+            f"--qp_envelope_weight {weights['env']}",
+            f"--qp_band_weight {weights['band']}",
+            f"--qp_event_weight {weights['event']}",
+            f"--qp_corr_weight {weights['corr']}",
+            f"--qp_multiscale_weight {weights['multi']}",
+            f"--qp_peak_weight {weights['peak']}",
+            f"--qp_peak_pool {max(3, int(round(cfg['dominant_period_samples'] / 8.0)))}",
         ])
         commands.append({"name": "QPEnhanced-TCN feature-aware", "command": _format_command(enhanced)})
 

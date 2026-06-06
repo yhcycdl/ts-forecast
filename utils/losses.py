@@ -197,6 +197,8 @@ class QPHybridLoss(nn.Module):
       - local-RMS envelope loss for AM signals
       - log spectrum magnitude loss for multi-frequency signals
       - target-driven event weighting for spike-like signals
+      - optional correlation / multi-scale / local-peak losses for shape
+        preservation when pointwise regression collapses to the mean
     """
 
     def __init__(
@@ -207,6 +209,10 @@ class QPHybridLoss(nn.Module):
         event_weight=1.0,
         envelope_window=9,
         huber_beta=0.3,
+        corr_weight=0.0,
+        multiscale_weight=0.0,
+        peak_weight=0.0,
+        peak_pool=9,
     ):
         super().__init__()
         self.deriv_weight = float(deriv_weight)
@@ -215,6 +221,10 @@ class QPHybridLoss(nn.Module):
         self.event_weight = float(event_weight)
         self.envelope_window = int(envelope_window)
         self.huber_beta = float(huber_beta)
+        self.corr_weight = float(corr_weight)
+        self.multiscale_weight = float(multiscale_weight)
+        self.peak_weight = float(peak_weight)
+        self.peak_pool = int(peak_pool)
 
     def _event_salience(self, target_bcp: torch.Tensor) -> torch.Tensor:
         centered = target_bcp - target_bcp.mean(dim=-1, keepdim=True)
@@ -223,6 +233,52 @@ class QPHybridLoss(nn.Module):
         deriv = torch.diff(target_bcp, dim=-1, prepend=target_bcp[..., :1])
         deriv = torch.abs(deriv) / torch.clamp(torch.abs(deriv).mean(dim=-1, keepdim=True), min=1e-6)
         return torch.clamp(0.5 * amp + 0.5 * deriv, min=0.0, max=10.0)
+
+    @staticmethod
+    def _corr_loss(pred_bcp: torch.Tensor, target_bcp: torch.Tensor) -> torch.Tensor:
+        pred_centered = pred_bcp - pred_bcp.mean(dim=-1, keepdim=True)
+        target_centered = target_bcp - target_bcp.mean(dim=-1, keepdim=True)
+        numerator = torch.sum(pred_centered * target_centered, dim=-1)
+        denom = torch.sqrt(
+            torch.clamp(torch.sum(pred_centered.square(), dim=-1), min=1e-12)
+            * torch.clamp(torch.sum(target_centered.square(), dim=-1), min=1e-12)
+        )
+        corr = numerator / denom
+        return torch.mean(1.0 - corr)
+
+    @staticmethod
+    def _multiscale_loss(pred_bcp: torch.Tensor, target_bcp: torch.Tensor) -> torch.Tensor:
+        import torch.nn.functional as F
+
+        losses = []
+        length = int(pred_bcp.shape[-1])
+        for scale in (2, 4, 8):
+            if length < scale * 2:
+                continue
+            pred_s = F.avg_pool1d(pred_bcp, kernel_size=scale, stride=scale)
+            target_s = F.avg_pool1d(target_bcp, kernel_size=scale, stride=scale)
+            losses.append(F.smooth_l1_loss(pred_s, target_s, beta=0.3))
+        if not losses:
+            return pred_bcp.new_tensor(0.0)
+        return torch.stack(losses).mean()
+
+    def _peak_pool_loss(self, pred_bcp: torch.Tensor, target_bcp: torch.Tensor) -> torch.Tensor:
+        import torch.nn.functional as F
+
+        pool = max(1, int(self.peak_pool))
+        if pool <= 1 or pred_bcp.shape[-1] < 2:
+            return pred_bcp.new_tensor(0.0)
+        if pool % 2 == 0:
+            pool += 1
+        pad = pool // 2
+        pred_hi = F.max_pool1d(pred_bcp, kernel_size=pool, stride=1, padding=pad)
+        target_hi = F.max_pool1d(target_bcp, kernel_size=pool, stride=1, padding=pad)
+        pred_lo = -F.max_pool1d(-pred_bcp, kernel_size=pool, stride=1, padding=pad)
+        target_lo = -F.max_pool1d(-target_bcp, kernel_size=pool, stride=1, padding=pad)
+        return 0.5 * (
+            F.smooth_l1_loss(pred_hi, target_hi, beta=self.huber_beta)
+            + F.smooth_l1_loss(pred_lo, target_lo, beta=self.huber_beta)
+        )
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor):
         pred, target = _align_pred_target(pred, target)
@@ -251,6 +307,15 @@ class QPHybridLoss(nn.Module):
             pred_fft = torch.log1p(torch.abs(torch.fft.rfft(pred_bcp, dim=-1)))
             target_fft = torch.log1p(torch.abs(torch.fft.rfft(target_bcp, dim=-1)))
             loss = loss + self.band_weight * nn.functional.l1_loss(pred_fft, target_fft)
+
+        if self.corr_weight > 0 and pred_bcp.shape[-1] > 1:
+            loss = loss + self.corr_weight * self._corr_loss(pred_bcp, target_bcp)
+
+        if self.multiscale_weight > 0:
+            loss = loss + self.multiscale_weight * self._multiscale_loss(pred_bcp, target_bcp)
+
+        if self.peak_weight > 0:
+            loss = loss + self.peak_weight * self._peak_pool_loss(pred_bcp, target_bcp)
 
         return loss
 
@@ -286,6 +351,10 @@ def build_criterion(args):
             event_weight=getattr(args, "qp_event_weight", 1.0),
             envelope_window=getattr(args, "qp_envelope_window", 9),
             huber_beta=getattr(args, "huber_beta", 0.3),
+            corr_weight=getattr(args, "qp_corr_weight", 0.0),
+            multiscale_weight=getattr(args, "qp_multiscale_weight", 0.0),
+            peak_weight=getattr(args, "qp_peak_weight", 0.0),
+            peak_pool=getattr(args, "qp_peak_pool", 9),
         )
 
     raise ValueError(f"Unknown loss: {args.loss}")

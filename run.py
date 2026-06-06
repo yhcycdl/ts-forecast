@@ -101,7 +101,7 @@ def _validate_experiment_args(args) -> None:
             )
 
         same_first = _looks_like_same_waveform(input_cols[0], output_cols[0])
-        if args.model in {"tcn_claude", "qpenhanced_tcn"} and not same_first:
+        if args.model in {"tcn_claude", "qpenhanced_tcn", "cycle_residual_tcn"} and not same_first:
             if int(getattr(args, "residual_output", 1)):
                 print(
                     f"[WARN] {args.model} residual_output assumes the first input channel and target "
@@ -131,7 +131,7 @@ def _validate_experiment_args(args) -> None:
     if args.sample_weight_col and args.loss.lower() in {"hybrid", "qp_hybrid"}:
         raise ValueError("--sample_weight_col is not supported with --loss hybrid/qp_hybrid.")
 
-    if args.model in {"tcn_claude", "smooth_pecnet", "qpenhanced_tcn"}:
+    if args.model in {"tcn_claude", "smooth_pecnet", "qpenhanced_tcn", "cycle_residual_tcn"}:
         _require_positive(args, ["kernel_size", "num_layers", "base_ch", "max_ch", "top_k_freq", "freq_dim"])
         if args.kernel_size < 2:
             raise ValueError("--kernel_size must be >= 2 for TCN models.")
@@ -145,6 +145,10 @@ def _validate_experiment_args(args) -> None:
         _require_positive(args, ["qpenhance_gate_hidden"])
         if not 0.0 <= args.qpenhance_input_dropout < 1.0:
             raise ValueError("--qpenhance_input_dropout must be in [0, 1).")
+    if args.model == "cycle_residual_tcn":
+        _require_positive(args, ["period_len", "cycle_base_cycles"])
+        if args.period_len > args.seq_len:
+            raise ValueError("--period_len must be <= --seq_len for cycle_residual_tcn.")
 
     if args.model == "PatchTST":
         _require_positive(args, ["patch_len", "patch_stride", "n_heads", "factor", "d_model", "d_ff"])
@@ -158,11 +162,21 @@ def _validate_experiment_args(args) -> None:
             raise ValueError("--moving_avg must be > 1 for DLinear.")
 
     if args.loss.lower() == "qp_hybrid":
-        for name in ["qp_deriv_weight", "qp_envelope_weight", "qp_band_weight", "qp_event_weight"]:
+        for name in [
+            "qp_deriv_weight",
+            "qp_envelope_weight",
+            "qp_band_weight",
+            "qp_event_weight",
+            "qp_corr_weight",
+            "qp_multiscale_weight",
+            "qp_peak_weight",
+        ]:
             if getattr(args, name) < 0:
                 raise ValueError(f"--{name} must be non-negative.")
         if args.qp_envelope_window < 1:
             raise ValueError("--qp_envelope_window must be >= 1.")
+        if args.qp_peak_pool < 1:
+            raise ValueError("--qp_peak_pool must be >= 1.")
 
 
 def _build_setting(args, ii: int) -> str:
@@ -326,6 +340,14 @@ def main():
                         help="qp_hybrid target-driven event emphasis")
     parser.add_argument("--qp_envelope_window", type=int, default=9,
                         help="qp_hybrid local RMS window in forecast samples")
+    parser.add_argument("--qp_corr_weight", type=float, default=0.0,
+                        help="qp_hybrid Pearson-shape correlation weight")
+    parser.add_argument("--qp_multiscale_weight", type=float, default=0.0,
+                        help="qp_hybrid multi-scale averaged waveform weight")
+    parser.add_argument("--qp_peak_weight", type=float, default=0.0,
+                        help="qp_hybrid local peak-pool amplitude weight")
+    parser.add_argument("--qp_peak_pool", type=int, default=9,
+                        help="qp_hybrid local max-pooling window for peak loss")
 
     # ===== optim/train =====
     parser.add_argument("--train_epochs", type=int, default=40)
@@ -398,6 +420,14 @@ def main():
                         help="qpenhanced_tcn channel-gate hidden width")
     parser.add_argument("--qpenhance_input_dropout", type=float, default=0.0,
                         help="qpenhanced_tcn dropout on enhanced input channels")
+    parser.add_argument("--period_len", type=int, default=0,
+                        help="cycle_residual_tcn dominant period length in samples")
+    parser.add_argument("--cycle_base_cycles", type=int, default=1,
+                        help="cycle_residual_tcn number of recent cycles used for the template")
+    parser.add_argument("--cycle_base_mode", type=str, default="last", choices=["last", "mean"],
+                        help="cycle_residual_tcn template policy")
+    parser.add_argument("--cycle_backbone_revin", type=int, default=0, choices=[0, 1],
+                        help="cycle_residual_tcn: enable RevIN inside residual TCN backbone")
 
     args = parser.parse_args()
     _validate_experiment_args(args)

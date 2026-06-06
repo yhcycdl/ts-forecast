@@ -14,6 +14,7 @@ MODEL_MODULES = {
     "tcn_claude": "models.tcn_claude",
     "smooth_pecnet": "models.smooth_pecnet",
     "qpenhanced_tcn": "models.qpenhanced_tcn",
+    "cycle_residual_tcn": "models.cycle_residual_tcn",
     "DLinear": "models.Dlinear",
     "PatchTST": "models.PatchTST",
 }

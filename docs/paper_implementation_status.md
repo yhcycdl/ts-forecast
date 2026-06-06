@@ -17,8 +17,9 @@ conservative.
 | Main waveform / residual augmentation | `scripts/augment_quasiperiodic_dataset.py`, `utils/qperiod_enhance.py` | Ready |
 | Causal envelope/frequency/band features | `scripts/augment_quasiperiodic_dataset.py`, `utils/qperiod_enhance.py` | Ready; offline mode is diagnostic only |
 | Baselines | `DLinear`, `PatchTST`, `tcn_claude`, `smooth_pecnet` | Ready |
+| Cycle-template residual prior | `models/cycle_residual_tcn.py` | Ready; useful for stable/noisy dominant-period data |
 | Feature-aware TCN wrapper | `models/qpenhanced_tcn.py` | Ready as a lightweight feature-gated TCN |
-| Structure-aware loss | `utils/losses.py::QPHybridLoss` | Ready as differentiable waveform/envelope/spectrum/event-salience loss |
+| Structure-aware loss | `utils/losses.py::QPHybridLoss` | Ready as differentiable waveform/envelope/spectrum/event-salience/correlation/multiscale/peak-pool loss |
 | Structure metrics and result table | `utils/tools.py`, `scripts/summarize_forecast_metrics.py` | Ready |
 
 ## Should Be Described Carefully
@@ -40,7 +41,7 @@ Use the following claims:
 2. A predictability portrait that classifies signal segments and recommends
    period-scaled windows.
 3. Causal main/residual, envelope/frequency, and band-energy features.
-4. A lightweight feature-gated TCN plus structure-aware loss.
+4. A cycle-template residual prior and a lightweight feature-gated TCN plus structure-aware loss.
 5. Evaluation with point metrics and quasi-periodic structure metrics.
 
 Avoid claiming:
@@ -57,8 +58,9 @@ For each signal type or dataset subset:
 1. DLinear baseline.
 2. PatchTST baseline.
 3. QPWave-TCN smooth-to-smooth.
-4. SmoothPECNet raw-to-smooth for noisy/modulated/spike data.
-5. QPEnhanced-TCN with causal `qp_*` features.
+4. CycleResidual-TCN for dominant-period main-waveform data.
+5. SmoothPECNet raw-to-smooth for noisy/modulated/spike data.
+6. QPEnhanced-TCN with causal `qp_*` features.
 
 Report:
 
