@@ -159,8 +159,19 @@ def _to_bcp_for_loss(x: torch.Tensor) -> torch.Tensor:
         return x.unsqueeze(1)
     if x.dim() != 3:
         raise ValueError(f"Expected tensor dim 2 or 3, got {tuple(x.shape)}")
-    if x.shape[1] <= x.shape[2] and x.shape[1] <= 16:
+    # Current forecasting models normally emit (B, P, C). Some older helpers
+    # emit (B, C, P). Prefer explicit single-channel cues, then fall back to
+    # the convention that the longer axis is time.
+    if x.shape[1] == 1 and x.shape[2] > 1:
         return x
+    if x.shape[2] == 1:
+        return x.transpose(1, 2).contiguous()
+    if x.shape[1] > x.shape[2]:
+        return x.transpose(1, 2).contiguous()
+    if x.shape[1] <= 16 and x.shape[2] > 16:
+        return x
+    # Ambiguous short multi-output horizon: assume model output convention
+    # (B, P, C), because all active models in this repository return that.
     return x.transpose(1, 2).contiguous()
 
 

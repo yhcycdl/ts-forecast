@@ -42,7 +42,12 @@ def _load_values(args):
     csv_path = os.path.join(args.root_path, args.data_path)
     df = load_dataframe(csv_path, max_rows=args.max_rows)
     col_names = None
-    if args.col_names is not None or args.features == "S":
+    if (
+        getattr(args, "input_cols", None) is not None
+        or getattr(args, "output_cols", None) is not None
+        or args.col_names is not None
+        or args.features == "S"
+    ):
         col_names = _infer_columns(args, None)
 
     if col_names is None:

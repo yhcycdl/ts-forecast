@@ -10,13 +10,16 @@ import pandas as pd
 
 from utils.qperiod_enhance import (
     band_features,
+    causal_zero_cross_frequency,
     clean_signal,
+    cycle_phase_sin_cos,
     envelope,
     estimate_dominant_period,
     event_skeleton,
     local_frequency,
     moving_average,
     phase_sin_cos,
+    rolling_rms,
 )
 
 
@@ -61,12 +64,12 @@ def _infer_fs(df: pd.DataFrame, time_col: str | None, fs_col: str | None, sample
     raise ValueError("Cannot infer sample rate. Pass --sample-rate or provide --time-col/--fs-col.")
 
 
-def _load_profile(profile_csv: str | None, signal_col: str) -> dict[str, dict]:
+def _load_profile(profile_csv: str | None, signal_col: str) -> tuple[dict[str, dict], dict | None]:
     if not profile_csv:
-        return {}
+        return {}, None
     profile = pd.read_csv(profile_csv)
     if profile.empty or "segment_id" not in profile.columns:
-        return {}
+        return {}, None
     if "signal_col" in profile.columns:
         matched = profile[profile["signal_col"].astype(str) == str(signal_col)]
         if not matched.empty:
@@ -74,7 +77,21 @@ def _load_profile(profile_csv: str | None, signal_col: str) -> dict[str, dict]:
     mapping: dict[str, dict] = {}
     for _, row in profile.iterrows():
         mapping[str(row["segment_id"])] = row.to_dict()
-    return mapping
+
+    global_profile: dict[str, object] = {}
+    for col in profile.columns:
+        if col == "segment_id":
+            continue
+        if pd.api.types.is_numeric_dtype(profile[col]):
+            values = pd.to_numeric(profile[col], errors="coerce").to_numpy(dtype=np.float64)
+            values = values[np.isfinite(values)]
+            if values.size:
+                global_profile[col] = float(np.median(values))
+        else:
+            counts = profile[col].astype(str).value_counts()
+            if not counts.empty:
+                global_profile[col] = str(counts.index[0])
+    return mapping, (global_profile or None)
 
 
 def _profile_value(profile: dict | None, key: str, default):
@@ -126,9 +143,14 @@ def _process_chunk(
     base = main_input if main_input is not None else raw
     freq_window = max(3, int(round(period / 4.0)))
     if "envelope_freq" in modules:
-        env = envelope(base, smooth_window=freq_window)
-        local_freq = local_frequency(base, fs=fs, smooth_window=freq_window)
-        phase_sin, phase_cos = phase_sin_cos(base)
+        if args.feature_mode == "offline":
+            env = envelope(base, smooth_window=freq_window)
+            local_freq = local_frequency(base, fs=fs, smooth_window=freq_window)
+            phase_sin, phase_cos = phase_sin_cos(base)
+        else:
+            env = rolling_rms(base, freq_window, mode="causal")
+            local_freq = causal_zero_cross_frequency(base, fs=fs, period_samples=period, smooth_window=freq_window)
+            phase_sin, phase_cos = cycle_phase_sin_cos(base.size, period)
         f_dom = fs / period if period > 0 else 0.0
         out.loc[idx, "qp_envelope"] = env
         out.loc[idx, "qp_local_freq"] = local_freq
@@ -156,6 +178,8 @@ def _process_chunk(
             period_samples=period,
             band_count=int(args.band_count),
             rms_window=max(3, int(round(period / 8.0))),
+            zero_phase=args.feature_mode == "offline",
+            rms_mode="centered" if args.feature_mode == "offline" else "causal",
         )
         for name, values in bands.items():
             out.loc[idx, f"qp_{name}"] = values
@@ -188,6 +212,12 @@ def main() -> None:
     parser.add_argument("--profile-csv", default=None, help="Optional profile_by_segment.csv.")
     parser.add_argument("--profile-signal-col", default="target_smooth")
     parser.add_argument("--modules", default="all", help="Comma-separated modules or 'all'.")
+    parser.add_argument(
+        "--feature-mode",
+        choices=["causal", "offline"],
+        default="causal",
+        help="causal avoids future leakage in input features; offline uses Hilbert/zero-phase features for analysis.",
+    )
     parser.add_argument("--period-samples", type=float, default=None)
     parser.add_argument("--smooth-window", type=int, default=None)
     parser.add_argument("--input-smooth-mode", choices=["causal", "centered"], default="causal")
@@ -213,7 +243,7 @@ def main() -> None:
         raise ValueError(f"raw_col '{args.raw_col}' not found. Available columns: {list(df.columns)}")
 
     out = df.copy()
-    profile_map = _load_profile(args.profile_csv, args.profile_signal_col)
+    profile_map, global_profile = _load_profile(args.profile_csv, args.profile_signal_col)
 
     group_cols = []
     if args.segment_col and args.segment_col in df.columns:
@@ -232,7 +262,10 @@ def main() -> None:
         segment_id = None
         if args.segment_col and args.segment_col in chunk.columns:
             segment_id = str(chunk[args.segment_col].iloc[0])
-        profile = profile_map.get(segment_id, None)
+        # If a segment is absent from a train-only profile, fall back to the
+        # profile aggregate instead of estimating period/type from the whole
+        # val/test chunk, which would leak future statistics into features.
+        profile = profile_map.get(segment_id, global_profile)
         fs = _infer_fs(chunk, args.time_col, args.fs_col, args.sample_rate)
         info = _process_chunk(
             out,
@@ -254,12 +287,14 @@ def main() -> None:
         "modules": sorted(modules),
         "raw_col": args.raw_col,
         "profile_csv": args.profile_csv,
+        "profile_fallback": "profile_global_median" if global_profile is not None else "chunk_estimate",
+        "feature_mode": args.feature_mode,
         "chunks": chunks,
         "recommended_input_sets": {
             "stable_single_freq": "qp_main_input",
             "noisy_single_freq": "qp_main_input,qp_residual,qp_abs_residual",
             "am_fm_modulated": "qp_main_input,qp_envelope,qp_local_freq_ratio,qp_phase_sin,qp_phase_cos",
-            "spike_event": "qp_main_input,qp_event_proximity,qp_event_prominence,qp_event_weight",
+            "spike_event": "qp_main_input,qp_residual,qp_abs_residual",
             "multi_freq": "qp_main_input,qp_band0_rms,qp_band1_rms,qp_band2_rms",
             "weak_periodic": "qp_main_input,qp_predictability_score,qp_weak_periodic_flag",
         },

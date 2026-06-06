@@ -100,6 +100,38 @@ def local_frequency(values: np.ndarray, fs: float, smooth_window: int = 1) -> np
     return freq
 
 
+def causal_zero_cross_frequency(values: np.ndarray, fs: float, period_samples: float, smooth_window: int = 1) -> np.ndarray:
+    x = clean_signal(values)
+    if x.size <= 1 or fs <= 0:
+        return np.zeros_like(x)
+    trend_window = max(3, int(round(max(period_samples, 1.0) * 2.0)))
+    centered = x - moving_average(x, trend_window, mode="causal")
+    signs = centered >= 0
+    default_freq = float(fs / period_samples) if period_samples > 0 else 0.0
+    freq = np.full(x.size, default_freq, dtype=np.float64)
+    last_cross = None
+    current_freq = default_freq
+    for i in range(1, x.size):
+        if not signs[i - 1] and signs[i]:
+            if last_cross is not None and i > last_cross:
+                current_freq = float(fs / max(i - last_cross, 1))
+            last_cross = i
+        freq[i] = current_freq
+    if smooth_window > 1:
+        freq = moving_average(freq, smooth_window, mode="causal")
+    return freq
+
+
+def cycle_phase_sin_cos(length: int, period_samples: float) -> tuple[np.ndarray, np.ndarray]:
+    length = int(length)
+    if length <= 0:
+        empty = np.asarray([], dtype=np.float64)
+        return empty, empty
+    period = max(float(period_samples), 1.0)
+    phase = 2.0 * math.pi * (np.arange(length, dtype=np.float64) / period)
+    return np.sin(phase), np.cos(phase)
+
+
 def phase_sin_cos(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     phase = analytic_phase(values)
     return np.sin(phase), np.cos(phase)
@@ -162,7 +194,14 @@ def relative_bands(f_dom: float, fs: float, band_count: int = 3) -> list[tuple[f
     return bands
 
 
-def bandpass_signal(values: np.ndarray, fs: float, low_hz: float, high_hz: float, order: int = 4) -> np.ndarray:
+def bandpass_signal(
+    values: np.ndarray,
+    fs: float,
+    low_hz: float,
+    high_hz: float,
+    order: int = 4,
+    zero_phase: bool = False,
+) -> np.ndarray:
     x = clean_signal(values)
     nyq = float(fs) * 0.5
     if x.size < 16 or fs <= 0 or low_hz <= 0 or high_hz <= low_hz or low_hz >= nyq:
@@ -172,7 +211,7 @@ def bandpass_signal(values: np.ndarray, fs: float, low_hz: float, high_hz: float
         return np.zeros_like(x)
     sos = signal.butter(int(order), [float(low_hz) / nyq, high_hz / nyq], btype="bandpass", output="sos")
     padlen = min(x.size - 1, max(0, 3 * (2 * sos.shape[0] + 1)))
-    if padlen <= 0:
+    if not zero_phase or padlen <= 0:
         return signal.sosfilt(sos, x)
     return signal.sosfiltfilt(sos, x, padlen=padlen)
 
@@ -183,12 +222,14 @@ def band_features(
     period_samples: float,
     band_count: int = 3,
     rms_window: int = 1,
+    zero_phase: bool = False,
+    rms_mode: str = "causal",
 ) -> dict[str, np.ndarray]:
     x = clean_signal(values)
     f_dom = float(fs / period_samples) if period_samples > 0 and fs > 0 else 0.0
     out: dict[str, np.ndarray] = {}
     for i, (low, high) in enumerate(relative_bands(f_dom, fs, band_count=band_count)):
-        band = bandpass_signal(x, fs, low, high)
+        band = bandpass_signal(x, fs, low, high, zero_phase=zero_phase)
         out[f"band{i}"] = band
-        out[f"band{i}_rms"] = rolling_rms(band, max(1, int(rms_window)), mode="centered")
+        out[f"band{i}_rms"] = rolling_rms(band, max(1, int(rms_window)), mode=rms_mode)
     return out

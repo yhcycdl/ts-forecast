@@ -33,9 +33,18 @@ TYPE_ENHANCED_INPUTS = {
     "stable_single_freq": "qp_main_input",
     "noisy_single_freq": "qp_main_input,qp_residual,qp_abs_residual",
     "am_fm_modulated": "qp_main_input,qp_envelope,qp_local_freq_ratio,qp_phase_sin,qp_phase_cos",
-    "spike_event": "qp_main_input,qp_event_proximity,qp_event_prominence,qp_event_weight",
+    "spike_event": "qp_main_input,qp_residual,qp_abs_residual",
     "multi_freq": "qp_main_input,qp_band0_rms,qp_band1_rms,qp_band2_rms",
     "weak_periodic": "qp_main_input,qp_predictability_score,qp_weak_periodic_flag",
+}
+
+TYPE_QP_LOSS_WEIGHTS = {
+    "stable_single_freq": (0.5, 0.1, 0.02, 0.0),
+    "noisy_single_freq": (0.5, 0.3, 0.05, 0.2),
+    "am_fm_modulated": (0.4, 1.0, 0.05, 0.0),
+    "spike_event": (1.0, 0.2, 0.05, 2.0),
+    "multi_freq": (0.4, 0.3, 0.2, 0.0),
+    "weak_periodic": (0.2, 0.2, 0.05, 0.0),
 }
 
 
@@ -156,6 +165,7 @@ def _command_common(
     input_col: str,
     output_col: str,
     csv_override: str | None = None,
+    loss_override: str | None = None,
 ) -> list[str]:
     root_path = args.root_path
     data_path = args.data_path
@@ -187,7 +197,7 @@ def _command_common(
         f"--batch_size {args.batch_size}",
         f"--learning_rate {args.learning_rate}",
         f"--train_epochs {args.train_epochs}",
-        f"--loss {cfg['loss']}",
+        f"--loss {loss_override or cfg['loss']}",
         f"--split_col {_q(args.split_col)}",
         f"--segment_col {_q(args.segment_col)}",
         f"--plot_raw_col {_q(args.raw_col)}",
@@ -250,6 +260,10 @@ def _build_commands(args: argparse.Namespace, cfg: dict) -> list[dict]:
 
     if args.enhanced_csv:
         enhanced_input_cols = args.enhanced_input_cols or TYPE_ENHANCED_INPUTS.get(cfg["signal_type"], "qp_main_input")
+        deriv_w, env_w, band_w, event_w = TYPE_QP_LOSS_WEIGHTS.get(
+            cfg["signal_type"],
+            TYPE_QP_LOSS_WEIGHTS["noisy_single_freq"],
+        )
         enhanced_id = f"{prefix}_{cfg['signal_type']}_qpenhanced_sl{cfg['seq_len']}_pl{cfg['pred_len']}"
         enhanced = _command_common(
             args,
@@ -259,6 +273,7 @@ def _build_commands(args: argparse.Namespace, cfg: dict) -> list[dict]:
             enhanced_input_cols,
             args.enhanced_target_col,
             csv_override=args.enhanced_csv,
+            loss_override="qp_hybrid",
         )
         enhanced.extend([
             f"--kernel_size {cfg['kernel_size']}",
@@ -269,11 +284,10 @@ def _build_commands(args: argparse.Namespace, cfg: dict) -> list[dict]:
             "--residual_output 1",
             "--qpenhance_gate 1",
             "--qpenhance_gate_hidden 32",
-            "--loss qp_hybrid",
-            "--qp_deriv_weight 0.5",
-            "--qp_envelope_weight 0.5",
-            "--qp_band_weight 0.05",
-            "--qp_event_weight 1.0",
+            f"--qp_deriv_weight {deriv_w}",
+            f"--qp_envelope_weight {env_w}",
+            f"--qp_band_weight {band_w}",
+            f"--qp_event_weight {event_w}",
         ])
         commands.append({"name": "QPEnhanced-TCN feature-aware", "command": _format_command(enhanced)})
 

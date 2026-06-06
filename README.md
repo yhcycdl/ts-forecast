@@ -120,7 +120,8 @@ python scripts/augment_quasiperiodic_dataset.py \
   --output ./outputs/quasi_bidmc_resp_ma2s/bidmc_resp_ma2s_aug.csv \
   --raw-col raw \
   --segment-col segment_id \
-  --split-col split
+  --split-col split \
+  --feature-mode causal
 ```
 
 The augmented CSV adds reusable `qp_*` columns:
@@ -130,11 +131,21 @@ The augmented CSV adds reusable `qp_*` columns:
 - `qp_envelope`, `qp_local_freq_ratio`, `qp_phase_sin`, `qp_phase_cos`:
   conditioning features for amplitude/frequency modulation.
 - `qp_event_mask`, `qp_event_prominence`, `qp_event_proximity`,
-  `qp_event_weight`: event skeleton features for ECG/PPG/impact-like signals.
+  `qp_event_weight`: offline event skeleton labels/features for analysis and
+  event-focused ablations. They are not used as default forecasting inputs
+  because peak detection can use future samples.
 - `qp_band0_rms`, `qp_band1_rms`, `qp_band2_rms`: relative band energy
   features for multi-frequency or mode-switching signals.
 - `qp_predictability_score`, `qp_weak_periodic_flag`: rejection/target-switch
   indicators for weak-periodic boundary cases.
+
+`--feature-mode causal` is the default and avoids future leakage in model input
+features. Use `--feature-mode offline` only for diagnostic analysis or an
+explicit offline ablation, because Hilbert/zero-phase/event features can inspect
+future samples within the split.
+When `--profile-csv` is provided, segments missing from the profile use the
+profile-level median period/type instead of estimating from the full val/test
+chunk.
 
 Then generate commands including the enhanced model:
 

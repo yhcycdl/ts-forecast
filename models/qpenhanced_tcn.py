@@ -9,10 +9,11 @@ from models import tcn_claude
 
 
 class ChannelGate(nn.Module):
-    def __init__(self, channels: int, hidden: int = 32):
+    def __init__(self, channels: int, hidden: int = 32, preserve_first: bool = True):
         super().__init__()
         channels = int(channels)
         hidden = max(4, int(hidden))
+        self.preserve_first = bool(preserve_first)
         self.net = nn.Sequential(
             nn.Linear(channels * 3, hidden),
             nn.GELU(),
@@ -25,6 +26,9 @@ class ChannelGate(nn.Module):
         std = x.std(dim=-1, unbiased=False)
         last = x[..., -1]
         gate = self.net(torch.cat([mean, std, last], dim=-1)).unsqueeze(-1)
+        if self.preserve_first and gate.shape[1] > 0:
+            gate = gate.clone()
+            gate[:, :1, :] = 1.0
         return x * gate
 
 
@@ -46,9 +50,10 @@ class Model(nn.Module):
         self.seq_len = int(args.seq_len)
         self.in_channels = int(getattr(args, "enc_in", 1))
         self.use_gate = bool(int(getattr(args, "qpenhance_gate", 1)))
-        self.input_dropout = nn.Dropout(float(getattr(args, "qpenhance_input_dropout", 0.0)))
+        self.input_dropout_p = float(getattr(args, "qpenhance_input_dropout", 0.0))
+        self.input_dropout = nn.Dropout(self.input_dropout_p)
         hidden = int(getattr(args, "qpenhance_gate_hidden", 32))
-        self.gate = ChannelGate(self.in_channels, hidden=hidden) if self.use_gate else nn.Identity()
+        self.gate = ChannelGate(self.in_channels, hidden=hidden, preserve_first=True) if self.use_gate else nn.Identity()
 
         backbone_args = copy.copy(args)
         backbone_args.enc_in = self.in_channels
@@ -56,7 +61,7 @@ class Model(nn.Module):
         print(
             "[QPEnhancedTCN] "
             f"enc_in={self.in_channels} gate={int(self.use_gate)} "
-            f"input_dropout={float(getattr(args, 'qpenhance_input_dropout', 0.0))}"
+            f"input_dropout={self.input_dropout_p}"
         )
 
     def _to_bcl(self, x: torch.Tensor) -> torch.Tensor:
@@ -65,11 +70,18 @@ class Model(nn.Module):
         if x.dim() == 3:
             if x.shape[1] == self.seq_len and x.shape[2] == self.in_channels:
                 return x.permute(0, 2, 1).contiguous()
-            return x
+            if x.shape[1] == self.in_channels and x.shape[2] == self.seq_len:
+                return x
+            raise ValueError(
+                "qpenhanced_tcn input shape not recognized. Expected "
+                f"(B,{self.in_channels},{self.seq_len}) or "
+                f"(B,{self.seq_len},{self.in_channels}), got {tuple(x.shape)}."
+            )
         raise ValueError(f"Expected x.dim() in [2, 3], got {tuple(x.shape)}")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self._to_bcl(x)
-        x = self.input_dropout(x)
+        if self.training and self.input_dropout_p > 0 and x.shape[1] > 1:
+            x = torch.cat([x[:, :1, :], self.input_dropout(x[:, 1:, :])], dim=1)
         x = self.gate(x)
         return self.backbone(x)

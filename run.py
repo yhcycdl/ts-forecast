@@ -308,7 +308,7 @@ def main():
 
 
     # ===== loss =====
-    parser.add_argument('--loss',type=str, default='MSE',choices=['MSE','hybrid','hubrid','mae','huber','wmse','qp_hybrid'])
+    parser.add_argument('--loss', type=str, default='MSE', choices=['MSE', 'mse', 'hybrid', 'hubrid', 'mae', 'huber', 'wmse', 'qp_hybrid'])
     parser.add_argument("--fft_weight", type=float, default=0.1)
     parser.add_argument("--deriv_weight", type=float, default=1.0)
     parser.add_argument("--cont_weight", type=float, default=5.0)
