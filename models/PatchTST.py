@@ -36,7 +36,7 @@ class FlattenHead(nn.Module):
         return x
 
 
-def _to_BLC(x, in_channels: int):
+def _to_BLC(x, in_channels: int, seq_len: int):
     """
     支持:
       - (B,L)
@@ -45,20 +45,30 @@ def _to_BLC(x, in_channels: int):
     统一成 (B,L,C)
     """
     if x.dim() == 2:
+        if in_channels != 1 or x.shape[1] != seq_len:
+            raise ValueError(
+                "PatchTST 2D input is only valid for single-channel "
+                f"(B,{seq_len}) tensors; got {tuple(x.shape)} with "
+                f"enc_in={in_channels}."
+            )
         return x.unsqueeze(-1)  # (B,L,1)
 
     if x.dim() != 3:
         raise ValueError(f"Expected x dim 2 or 3, got {tuple(x.shape)}")
 
     # (B,C,L) -> (B,L,C)
-    if x.shape[1] == in_channels:
+    if x.shape[1] == in_channels and x.shape[2] == seq_len:
         return x.permute(0, 2, 1).contiguous()
 
     # (B,L,C)
-    if x.shape[2] == in_channels:
+    if x.shape[1] == seq_len and x.shape[2] == in_channels:
         return x
 
-    raise ValueError(f"Cannot infer channel dim. got {tuple(x.shape)} with in_channels={in_channels}")
+    raise ValueError(
+        "PatchTST input shape not recognized. Expected "
+        f"(B,{in_channels},{seq_len}) or (B,{seq_len},{in_channels}), "
+        f"got {tuple(x.shape)}."
+    )
 
 
 class Model(nn.Module):
@@ -126,7 +136,7 @@ class Model(nn.Module):
         self.patch_num = patch_num
 
     def _encode_backbone(self, x):
-        x = _to_BLC(x, self.in_channels)
+        x = _to_BLC(x, self.in_channels, self.seq_len)
 
         means = x.mean(dim=1, keepdim=True).detach()
         x = x - means

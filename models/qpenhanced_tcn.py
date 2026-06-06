@@ -66,6 +66,12 @@ class Model(nn.Module):
 
     def _to_bcl(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() == 2:
+            if self.in_channels != 1 or x.shape[1] != self.seq_len:
+                raise ValueError(
+                    "qpenhanced_tcn 2D input is only valid for single-channel "
+                    f"(B,{self.seq_len}) tensors; got {tuple(x.shape)} with "
+                    f"enc_in={self.in_channels}."
+                )
             return x.unsqueeze(1)
         if x.dim() == 3:
             if x.shape[1] == self.seq_len and x.shape[2] == self.in_channels:

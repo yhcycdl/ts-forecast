@@ -74,11 +74,23 @@ class Model(nn.Module):
 
     def _to_bcl(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() == 2:
+            if self.raw_in_channels != 1 or x.shape[1] != self.seq_len:
+                raise ValueError(
+                    "SmoothPECNet 2D input is only valid for single-channel "
+                    f"(B,{self.seq_len}) tensors; got {tuple(x.shape)} with "
+                    f"enc_in={self.raw_in_channels}."
+                )
             return x.unsqueeze(1)
         if x.dim() == 3:
             if x.shape[1] == self.seq_len and x.shape[2] == self.raw_in_channels:
                 return x.permute(0, 2, 1).contiguous()
-            return x
+            if x.shape[1] == self.raw_in_channels and x.shape[2] == self.seq_len:
+                return x
+            raise ValueError(
+                "SmoothPECNet input shape not recognized. Expected "
+                f"(B,{self.raw_in_channels},{self.seq_len}) or "
+                f"(B,{self.seq_len},{self.raw_in_channels}), got {tuple(x.shape)}."
+            )
         raise ValueError(f"Expected x.dim() in [2, 3], got {tuple(x.shape)}")
 
     def _augment(self, x: torch.Tensor) -> torch.Tensor:

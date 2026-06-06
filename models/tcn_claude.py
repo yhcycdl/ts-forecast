@@ -242,8 +242,7 @@ class Model(nn.Module):
         max_layers = max(1, max_layers)
         num_layers = min(int(getattr(args, "num_layers", 11)), max_layers)
         rf = (kernel_size - 1) * (2 ** num_layers - 1) + 1
-        print(f"[QPWaveTCN] layers={num_layers}  RF={rf}pts  "
-              f"({rf/5e6*1000:.2f}ms@5MHz)  seq_len={self.seq_len}")
+        print(f"[QPWaveTCN] layers={num_layers}  RF={rf} samples  seq_len={self.seq_len}")
 
         ch = [min(base_ch * (2 ** i), max_ch) for i in range(num_layers)]
         tcn_layers = []
@@ -279,11 +278,23 @@ class Model(nn.Module):
 
     def _to_BCL(self, x):
         if x.dim() == 2:
+            if self.in_channels != 1 or x.shape[1] != self.seq_len:
+                raise ValueError(
+                    "QPWaveTCN 2D input is only valid for single-channel "
+                    f"(B,{self.seq_len}) tensors; got {tuple(x.shape)} with "
+                    f"enc_in={self.in_channels}."
+                )
             return x.unsqueeze(1)
         if x.dim() == 3:
             if x.shape[1] == self.seq_len and x.shape[2] == self.in_channels:
                 return x.permute(0, 2, 1).contiguous()
-            return x
+            if x.shape[1] == self.in_channels and x.shape[2] == self.seq_len:
+                return x
+            raise ValueError(
+                "QPWaveTCN input shape not recognized. Expected "
+                f"(B,{self.in_channels},{self.seq_len}) or "
+                f"(B,{self.seq_len},{self.in_channels}), got {tuple(x.shape)}."
+            )
         raise ValueError(f"Expected x.dim() in [2,3], got {tuple(x.shape)}")
 
     def _extract_features(self, x, apply_input_norm: bool):
