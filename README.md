@@ -24,6 +24,7 @@ raw spike-perfect reconstruction.
 - Combustion pressure waveform data: `scripts/prepare_pressure_channel_wave_dataset.py`.
 - Signal profiling: `scripts/analyze_quasiperiodic_profile.py`.
 - Type-specific data splitting: `scripts/split_quasiperiodic_dataset_by_type.py`.
+- Type-specific experiment planning: `scripts/build_qp_experiment_plan.py`.
 - Cycle-adaptive experiment recommendation: `scripts/recommend_qp_config.py`.
 - Feature-aware augmentation: `scripts/augment_quasiperiodic_dataset.py`.
 - Experiment metric summary: `scripts/summarize_forecast_metrics.py`.
@@ -143,6 +144,24 @@ python scripts/split_quasiperiodic_dataset_by_type.py \
   --segment-col segment_id \
   --output-dir ./outputs/quasi_bidmc_resp_ma2s/by_type \
   --drop-unknown
+```
+
+Then build type-specific profile/augment/recommend scripts:
+
+```bash
+python scripts/build_qp_experiment_plan.py \
+  --split-metadata ./outputs/synthetic_qp4/by_type/split_by_type_metadata.json \
+  --output-dir ./outputs/synthetic_qp4/plan \
+  --model-id-prefix synthetic_qp4 \
+  --gpu 0
+
+bash ./outputs/synthetic_qp4/plan/prepare_qp_experiments.sh
+```
+
+After checking the generated commands, run all recommended training commands:
+
+```bash
+bash ./outputs/synthetic_qp4/plan/run_all_train_commands.sh
 ```
 
 ## Cycle-Adaptive Config Example
