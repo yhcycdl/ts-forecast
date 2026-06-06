@@ -1,18 +1,10 @@
 
-import importlib
 import os
 
 import torch
 import torch.nn as nn
 
-
-MODEL_REGISTRY = {
-    # Main quasi-periodic waveform models and baselines.
-    "tcn_claude": "models.tcn_claude",
-    "smooth_pecnet": "models.smooth_pecnet",
-    "DLinear": "models.Dlinear",
-    "PatchTST": "models.PatchTST",
-}
+from models.registry import MODEL_NAMES, get_model_module
 
 
 class Exp_Basic:
@@ -27,13 +19,13 @@ class Exp_Basic:
         return torch.device("cpu")
 
     def _build_model(self):
-        if self.args.model not in MODEL_REGISTRY:
+        if self.args.model not in MODEL_NAMES:
             raise ValueError(f"Unknown model: {self.args.model}. "
-                             f"Available: {list(MODEL_REGISTRY.keys())}")
+                             f"Available: {list(MODEL_NAMES)}")
 
         # Each model module must expose Model(args). Import lazily so optional
         # baselines do not make the main forecasting path depend on them.
-        module = importlib.import_module(MODEL_REGISTRY[self.args.model])
+        module = get_model_module(self.args.model)
         model = module.Model(self.args).float()
 
         if getattr(self.args, "use_multi_gpu", False) and getattr(self.args, "use_gpu", False):

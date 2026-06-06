@@ -6,6 +6,8 @@ analysis/predictability/
 .venv/
 .vscode/
 node_modules/
+package.json
+package-lock.json
 data/
 outputs/
 *.pyo
@@ -23,3 +25,5 @@ Codex_*.md
 gptfind.py
 urls_result.txt
 details_result.csv
+analysis/*.png
+analysis/*.svg

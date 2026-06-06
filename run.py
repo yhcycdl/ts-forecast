@@ -6,11 +6,12 @@ import random
 import re
 from datetime import datetime
 import numpy as np
-import torch
 
-from exp.exp_long_term_forecasting import Exp_Long_Term_Forecast
+from models.registry import MODEL_NAMES
 
 def set_seed(seed):
+    import torch
+
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -32,6 +33,13 @@ def _parse_cols(value):
     return cols if cols else None
 
 
+def _require_positive(args, names):
+    for name in names:
+        value = getattr(args, name)
+        if value <= 0:
+            raise ValueError(f"--{name} must be positive, got {value}.")
+
+
 def _looks_like_same_waveform(input_col: str, output_col: str) -> bool:
     a = input_col.lower()
     b = output_col.lower()
@@ -46,8 +54,38 @@ def _looks_like_same_waveform(input_col: str, output_col: str) -> bool:
 
 
 def _validate_experiment_args(args) -> None:
+    if args.model is None:
+        args.model = "tcn_claude"
+    if args.loss.lower() == "hubrid":
+        args.loss = "hybrid"
+
+    _require_positive(args, ["itr", "seq_len", "pred_len", "stride", "enc_in", "c_out", "batch_size"])
+    if args.eval_stride < -1:
+        raise ValueError("--eval_stride must be -1, 0, or a positive integer.")
+    if args.target_shift < 0 and args.window_mode == "past":
+        raise ValueError("--target_shift must be non-negative when --window_mode=past.")
+    if args.window_mode == "center":
+        center_left = args.seq_len // 2 if args.center_left < 0 else args.center_left
+        if center_left < 0 or center_left + args.pred_len > args.seq_len:
+            raise ValueError("center mode requires 0 <= center_left and center_left + pred_len <= seq_len.")
+
+    if not 0.0 < args.train_ratio < 1.0:
+        raise ValueError("--train_ratio must be in (0, 1).")
+    if not 0.0 <= args.val_ratio < 1.0:
+        raise ValueError("--val_ratio must be in [0, 1).")
+    if args.split_col is None and args.split_mode == "total" and args.train_ratio + args.val_ratio >= 1.0:
+        raise ValueError("--train_ratio + --val_ratio must be < 1 when not using --split_col.")
+
     input_cols = _parse_cols(getattr(args, "input_cols", None))
     output_cols = _parse_cols(getattr(args, "output_cols", None))
+    if args.input_cols is not None and not input_cols:
+        raise ValueError("--input_cols was provided but no valid column names were parsed.")
+    if args.output_cols is not None:
+        if not output_cols:
+            raise ValueError("--output_cols was provided but no valid column names were parsed.")
+        if len(output_cols) == 1:
+            args.target = output_cols[0]
+
     if input_cols is not None or output_cols is not None:
         if not input_cols or not output_cols:
             raise ValueError("Explicit IO requires both --input_cols and --output_cols.")
@@ -89,6 +127,31 @@ def _validate_experiment_args(args) -> None:
                 "[WARN] hybrid cont_weight > 0 enforces boundary continuity between the first "
                 "input channel and target. For raw->smooth/event targets, set --cont_weight 0."
             )
+
+    if args.sample_weight_col and args.loss.lower() == "hybrid":
+        raise ValueError("--sample_weight_col is not supported with --loss hybrid.")
+
+    if args.model in {"tcn_claude", "smooth_pecnet"}:
+        _require_positive(args, ["kernel_size", "num_layers", "base_ch", "max_ch", "top_k_freq", "freq_dim"])
+        if args.kernel_size < 2:
+            raise ValueError("--kernel_size must be >= 2 for TCN models.")
+        if args.kernel_size >= args.seq_len:
+            raise ValueError("--kernel_size must be smaller than --seq_len for TCN models.")
+        if args.max_ch < args.base_ch:
+            raise ValueError("--max_ch must be >= --base_ch.")
+        if args.smoothpec_window < 1:
+            raise ValueError("--smoothpec_window must be >= 1.")
+
+    if args.model == "PatchTST":
+        _require_positive(args, ["patch_len", "patch_stride", "n_heads", "factor", "d_model", "d_ff"])
+        if args.patch_len > args.seq_len:
+            raise ValueError("--patch_len must be <= --seq_len.")
+        if args.d_model % args.n_heads != 0:
+            raise ValueError("--d_model must be divisible by --n_heads for PatchTST.")
+
+    if args.model == "DLinear":
+        if args.moving_avg <= 1:
+            raise ValueError("--moving_avg must be > 1 for DLinear.")
 
 
 def _build_setting(args, ii: int) -> str:
@@ -152,12 +215,15 @@ def _build_setting(args, ii: int) -> str:
     return f"{base}_{ii}"
 
 def main():
-    parser = argparse.ArgumentParser(description="Project")
+    parser = argparse.ArgumentParser(
+        description="Quasi-periodic main-waveform forecasting runner",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
 
     # ===== basic =====
     parser.add_argument("--task_name", type=str, default="long_term_forecast",
                         choices=["long_term_forecast"])
-    parser.add_argument("--is_training", type=int, default=1)
+    parser.add_argument("--is_training", type=int, default=1, choices=[0, 1])
     parser.add_argument("--itr", type=int, default=1)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--run_tag", type=str, default=None,
@@ -212,19 +278,20 @@ def main():
                         help="number of forecast points to render/evaluate in rolling test plots; <=0 means plot the full test split")
     parser.add_argument("--start_idx", type=int, default=0,
                         help="rolling test start index within the chosen split")
-    parser.add_argument('--enc_in', type=int , default=1,help='input')
-    parser.add_argument('--out_in',type=int, default=1,help='output')
+    parser.add_argument("--enc_in", type=int, default=1, help="number of input channels")
+    parser.add_argument("--c_out", type=int, default=1, help="number of output channels")
+    parser.add_argument("--out_in", type=int, default=1, help=argparse.SUPPRESS)
     # scaler: channel(多变量推荐) / global(单变量)
     parser.add_argument("--scaler", type=str, default="global", choices=["global", "channel"])
 
     # ===== loader =====
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--num_workers", type=int, default=4)
-    parser.add_argument("--pin_memory", type=int, default=1)
-    parser.add_argument("--drop_last", type=int, default=0)
+    parser.add_argument("--pin_memory", type=int, default=1, choices=[0, 1])
+    parser.add_argument("--drop_last", type=int, default=0, choices=[0, 1])
 
     # ===== model =====
-    parser.add_argument("--model", type=str, default=None)
+    parser.add_argument("--model", type=str, default=None, choices=MODEL_NAMES)
     parser.add_argument("--model_id", type=str, default=None,
                         help="optional experiment suffix to distinguish runs with different channel selections or configs")
 
@@ -244,10 +311,11 @@ def main():
     parser.add_argument("--learning_rate", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
     parser.add_argument("--max_grad_norm", type=float, default=1.0)
-    parser.add_argument("--use_amp", action="store_true", default=True)
-    parser.add_argument("--no_amp", action="store_true", default=False,
-                        help="disable automatic mixed precision even on CUDA")
-    parser.add_argument('--optimizer',type=str, default='Adamw',help='optimizer')
+    parser.add_argument("--use_amp", dest="use_amp", action="store_true", default=True)
+    parser.add_argument("--no_amp", "--no_use_amp", "--no-use-amp", dest="use_amp",
+                        action="store_false", help="disable automatic mixed precision even on CUDA")
+    parser.add_argument("--optimizer", type=str, default="AdamW",
+                        choices=["Adam", "AdamW", "SGD", "adam", "adamw", "sgd"])
     parser.add_argument("--momentum", type=float, default=0.9)
 
     # ===== checkpoint =====
@@ -269,16 +337,19 @@ def main():
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--e_layers", type=int, default=2)
 
-    parser.add_argument("--down_sampling_window", type=int, default=2)
-    parser.add_argument("--down_sampling_layers", type=int, default=2)
-    parser.add_argument("--down_sampling_method", type=str, default="max", choices=["avg", "max", "conv"])
-
-    parser.add_argument("--channel_independence", type=int, default=0, choices=[0, 1])
-    parser.add_argument("--decomp_method", type=str, default="moving_avg", choices=["moving_avg", "dft_decomp"])
     parser.add_argument("--moving_avg", type=int, default=25)
-    parser.add_argument("--top_k", type=int, default=5)
-    parser.add_argument("--use_norm", type=int, default=1)
-    parser.add_argument("--c_out", type=int, default=1)
+    parser.add_argument("--individual", type=int, default=0, choices=[0, 1],
+                        help="DLinear: use one linear head per output channel")
+    parser.add_argument("--patch_len", type=int, default=16,
+                        help="PatchTST patch length")
+    parser.add_argument("--patch_stride", type=int, default=8,
+                        help="PatchTST patch stride")
+    parser.add_argument("--n_heads", type=int, default=8,
+                        help="PatchTST attention heads")
+    parser.add_argument("--factor", type=int, default=1,
+                        help="PatchTST attention factor")
+    parser.add_argument("--activation", type=str, default="gelu", choices=["relu", "gelu"],
+                        help="PatchTST encoder activation")
     parser.add_argument("--kernel_size", type=int, default=3,
                         help="tcn_claude temporal kernel size; larger values increase receptive field")
     parser.add_argument("--num_layers", type=int, default=11,
@@ -302,22 +373,10 @@ def main():
                         help="smooth_pecnet input arrangement before the TCN backbone")
 
     args = parser.parse_args()
-
-    if args.model is None:
-        args.model = "tcn_claude"
-    if args.loss.lower() == "hubrid":
-        args.loss = "hybrid"
-
-    if args.output_cols is not None:
-        out_cols = [c.strip() for c in args.output_cols.split(",") if c.strip()]
-        if not out_cols:
-            raise ValueError("--output_cols was provided but no valid column names were parsed.")
-        if len(out_cols) == 1:
-            args.target = out_cols[0]
-
     _validate_experiment_args(args)
-    if getattr(args, "no_amp", False):
-        args.use_amp = False
+
+    import torch
+    from exp.exp_long_term_forecasting import Exp_Long_Term_Forecast
 
     set_seed(args.seed)
 
