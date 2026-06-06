@@ -8,8 +8,10 @@ raw spike-perfect reconstruction.
 
 1. Prepare public or domain data into long-format CSV files.
 2. Profile the signal type with `scripts/analyze_quasiperiodic_profile.py`.
-3. Train forecasting baselines and the main TCN model with `run.py`.
-4. Compare predictions with point metrics and rolling forecast plots.
+3. Generate cycle-adaptive `seq_len/pred_len/smooth_window` settings with
+   `scripts/recommend_qp_config.py`.
+4. Train forecasting baselines and the main TCN model with `run.py`.
+5. Compare predictions with point metrics and rolling forecast plots.
 
 ## Active Code Surface
 
@@ -17,6 +19,7 @@ raw spike-perfect reconstruction.
 - Public quasi-periodic data: `scripts/prepare_quasiperiodic_wave_dataset.py`.
 - Combustion pressure waveform data: `scripts/prepare_pressure_channel_wave_dataset.py`.
 - Signal profiling: `scripts/analyze_quasiperiodic_profile.py`.
+- Cycle-adaptive experiment recommendation: `scripts/recommend_qp_config.py`.
 - Optional analysis/plotting helpers remain under `scripts/`, but old risk-label
   and broken `src.data`-based scripts have been removed from the active branch.
 
@@ -83,6 +86,38 @@ python scripts/analyze_quasiperiodic_profile.py \
   --split-values train \
   --output-dir ./outputs/profile_bidmc_resp
 ```
+
+The profile outputs are intended to support the paper's "predictability
+portrait" table:
+
+- `profile_by_segment.csv`: one row per segment/signal with dominant period,
+  spectral entropy, autocorrelation peak, residual energy ratio, spike
+  prominence, predictability score, signal type, and recommended module.
+- `profile_summary.csv`: median feature summary by signal type.
+- `profile_report.md`: compact human-readable report.
+
+## Cycle-Adaptive Config Example
+
+```bash
+python scripts/recommend_qp_config.py \
+  --profile-csv ./outputs/profile_bidmc_resp/profile_by_segment.csv \
+  --prepared-csv ./outputs/quasi_bidmc_resp_ma2s/bidmc_resp_ma2s.csv \
+  --output-dir ./outputs/profile_bidmc_resp/recommend \
+  --model-id-prefix bidmc_resp \
+  --gpu 1
+```
+
+This writes:
+
+- `recommended_qp_config.json`: dataset-level and type-level recommended
+  periods, `seq_len`, `pred_len`, stride, smoothing window, and module.
+- `recommended_train_commands.sh`: runnable commands for QPWave-TCN, DLinear,
+  PatchTST, and SmoothPECNet when the signal type benefits from raw->smooth
+  decomposition.
+
+Default policy is roughly `10` past cycles as input and `3-4` future cycles as
+output. Weak-periodic boundary cases are intentionally shortened because they
+are not good long-horizon point-forecast targets.
 
 ## Train Example
 

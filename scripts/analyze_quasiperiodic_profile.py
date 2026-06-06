@@ -22,12 +22,22 @@ SIGNAL_TYPE_MODULES = {
 
 
 TYPE_WINDOWS = {
-    "stable_single_freq": (10, 3),
-    "noisy_single_freq": (12, 2),
-    "am_fm_modulated": (15, 2),
-    "spike_event": (12, 3),
-    "multi_freq": (10, 1),
+    "stable_single_freq": (10, 4),
+    "noisy_single_freq": (10, 3),
+    "am_fm_modulated": (12, 3),
+    "spike_event": (10, 3),
+    "multi_freq": (12, 2),
     "weak_periodic": (6, 1),
+}
+
+
+SIGNAL_TYPE_TASKS = {
+    "stable_single_freq": "main_waveform_forecast",
+    "noisy_single_freq": "smooth_main_waveform_forecast",
+    "am_fm_modulated": "conditioned_main_waveform_forecast",
+    "spike_event": "event_timing_and_main_waveform_forecast",
+    "multi_freq": "band_energy_or_multibranch_waveform_forecast",
+    "weak_periodic": "short_horizon_or_rejection",
 }
 
 
@@ -55,6 +65,22 @@ def _infer_sample_rate(df: pd.DataFrame, time_col: str | None, sample_rate: floa
     raise ValueError("Cannot infer sample rate. Pass --sample-rate or provide a valid --time-col.")
 
 
+def _infer_segment_sample_rate(
+    df: pd.DataFrame,
+    time_col: str | None,
+    fs_col: str | None,
+    sample_rate: float | None,
+) -> float:
+    if sample_rate is not None and sample_rate > 0:
+        return float(sample_rate)
+    if fs_col and fs_col in df.columns:
+        fs_values = pd.to_numeric(df[fs_col], errors="coerce").to_numpy(dtype=np.float64)
+        fs_values = fs_values[np.isfinite(fs_values) & (fs_values > 0)]
+        if fs_values.size:
+            return float(np.median(fs_values))
+    return _infer_sample_rate(df, time_col, sample_rate)
+
+
 def _clean_series(values: np.ndarray, max_samples: int) -> np.ndarray:
     x = np.asarray(values, dtype=np.float64).reshape(-1)
     finite = np.isfinite(x)
@@ -74,8 +100,10 @@ def _moving_average(x: np.ndarray, window: int) -> np.ndarray:
         return x.copy()
     cumsum = np.concatenate([[0.0], np.cumsum(x, dtype=np.float64)])
     idx = np.arange(x.size)
-    left = np.maximum(0, idx - window // 2)
-    right = np.minimum(x.size, idx + (window - window // 2) + 1)
+    left_span = (window - 1) // 2
+    right_span = window - left_span
+    left = np.maximum(0, idx - left_span)
+    right = np.minimum(x.size, idx + right_span)
     count = right - left
     return (cumsum[right] - cumsum[left]) / count
 
@@ -223,7 +251,16 @@ def _classify(row: dict) -> str:
     return "stable_single_freq"
 
 
-def _recommend(signal_type: str, period_samples: float) -> dict:
+def _predictability_score(row: dict) -> float:
+    energy = float(row["dominant_energy_ratio"])
+    acf = max(0.0, float(row["acf_peak"]))
+    entropy_term = 1.0 - float(row["spectral_entropy"])
+    residual_term = 1.0 - min(1.0, float(row["residual_energy_ratio"]))
+    score = 0.35 * energy + 0.35 * acf + 0.15 * entropy_term + 0.15 * residual_term
+    return float(np.clip(score, 0.0, 1.0))
+
+
+def _recommend(signal_type: str, period_samples: float, fs: float) -> dict:
     in_cycles, out_cycles = TYPE_WINDOWS.get(signal_type, (10, 2))
     period = max(1, int(round(period_samples))) if period_samples > 0 else 1
     if signal_type == "spike_event":
@@ -234,13 +271,20 @@ def _recommend(signal_type: str, period_samples: float) -> dict:
         smooth = max(3, int(round(period / 8)))
     else:
         smooth = max(1, int(round(period / 10)))
+    seq_len = int(max(16, period * in_cycles))
+    pred_len = int(max(1, period * out_cycles))
+    safe_fs = max(float(fs), 1e-12)
     return {
         "recommended_module": SIGNAL_TYPE_MODULES[signal_type],
+        "recommended_task": SIGNAL_TYPE_TASKS[signal_type],
         "input_cycles": int(in_cycles),
         "output_cycles": int(out_cycles),
-        "recommended_seq_len": int(max(16, period * in_cycles)),
-        "recommended_pred_len": int(max(1, period * out_cycles)),
+        "recommended_seq_len": seq_len,
+        "recommended_pred_len": pred_len,
         "recommended_smooth_window": int(smooth),
+        "recommended_seq_sec": float(seq_len / safe_fs),
+        "recommended_pred_sec": float(pred_len / safe_fs),
+        "recommended_smooth_sec": float(smooth / safe_fs),
     }
 
 
@@ -252,15 +296,19 @@ def analyze_segment(values: np.ndarray, fs: float, max_samples: int) -> dict:
     row = {
         "n_samples_analyzed": int(x.size),
         "sample_rate_hz": float(fs),
+        "duration_sec_analyzed": float(x.size / max(fs, 1e-12)),
         **spec,
         **acf,
         **peaks,
         "envelope_cv": _envelope_cv(x),
         "residual_energy_ratio": _residual_energy_ratio(x, spec["dominant_period_samples"]),
     }
+    row["dominant_period_sec"] = float(row["dominant_period_samples"] / max(fs, 1e-12))
+    row["cycles_analyzed"] = float(row["n_samples_analyzed"] / max(row["dominant_period_samples"], 1e-12))
     signal_type = _classify(row)
     row["signal_type"] = signal_type
-    row.update(_recommend(signal_type, row["dominant_period_samples"]))
+    row["predictability_score"] = _predictability_score(row)
+    row.update(_recommend(signal_type, row["dominant_period_samples"], fs=fs))
     return row
 
 
@@ -283,9 +331,12 @@ def _write_report(summary: pd.DataFrame, output_dir: Path) -> None:
         "signal_type",
         "dominant_frequency_hz",
         "dominant_period_samples",
+        "dominant_period_sec",
+        "predictability_score",
         "recommended_seq_len",
         "recommended_pred_len",
         "recommended_smooth_window",
+        "recommended_pred_sec",
         "recommended_module",
     ]
     if not summary.empty:
@@ -308,6 +359,7 @@ def main() -> None:
     parser.add_argument("--csv", required=True, help="Input prepared or raw CSV.")
     parser.add_argument("--signal-cols", required=True, help="Comma-separated signal columns to analyze.")
     parser.add_argument("--time-col", default="time", help="Time column used to infer sample rate when --sample-rate is omitted.")
+    parser.add_argument("--fs-col", default="fs", help="Optional per-row sample-rate column in prepared CSVs.")
     parser.add_argument("--sample-rate", type=float, default=None, help="Sample rate in Hz.")
     parser.add_argument("--segment-col", default=None, help="Optional segment id column.")
     parser.add_argument("--split-col", default=None, help="Optional split column.")
@@ -333,7 +385,16 @@ def main() -> None:
         keep = {item.lower() for item in _parse_cols(args.split_values)}
         df = df[df[args.split_col].astype(str).str.lower().isin(keep)].copy()
 
-    fs = _infer_sample_rate(df, args.time_col, args.sample_rate)
+    global_fs = None
+    if args.sample_rate is not None:
+        global_fs = float(args.sample_rate)
+    elif args.fs_col and args.fs_col in df.columns:
+        fs_values = pd.to_numeric(df[args.fs_col], errors="coerce").to_numpy(dtype=np.float64)
+        fs_values = fs_values[np.isfinite(fs_values) & (fs_values > 0)]
+        if fs_values.size:
+            global_fs = float(np.median(fs_values))
+    if global_fs is None:
+        global_fs = _infer_sample_rate(df, args.time_col, args.sample_rate)
 
     if args.segment_col:
         if args.segment_col not in df.columns:
@@ -344,6 +405,7 @@ def main() -> None:
 
     rows = []
     for segment_id, seg_df in grouped:
+        fs = _infer_segment_sample_rate(seg_df, args.time_col, args.fs_col, args.sample_rate)
         for col in signal_cols:
             if seg_df.empty:
                 continue
@@ -373,6 +435,9 @@ def main() -> None:
             median_spectral_entropy=("spectral_entropy", "median"),
             median_acf_peak=("acf_peak", "median"),
             median_residual_energy_ratio=("residual_energy_ratio", "median"),
+            median_predictability_score=("predictability_score", "median"),
+            median_recommended_seq_len=("recommended_seq_len", "median"),
+            median_recommended_pred_len=("recommended_pred_len", "median"),
         )
         .reset_index()
     )
@@ -382,7 +447,8 @@ def main() -> None:
     metadata = {
         "csv": str(csv_path),
         "signal_cols": signal_cols,
-        "sample_rate_hz": fs,
+        "sample_rate_hz": global_fs,
+        "fs_col": args.fs_col,
         "segment_col": args.segment_col,
         "split_col": args.split_col,
         "split_values": _parse_cols(args.split_values),
