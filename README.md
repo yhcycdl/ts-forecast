@@ -18,6 +18,8 @@ raw spike-perfect reconstruction.
 
 - Training/evaluation: `run.py`, `exp/`, `data_provider/`, `models/`, `utils/`.
 - Public quasi-periodic data: `scripts/prepare_quasiperiodic_wave_dataset.py`.
+- Controlled synthetic quasi-periodic data:
+  `scripts/generate_synthetic_quasiperiodic_dataset.py`.
 - Combustion pressure waveform data: `scripts/prepare_pressure_channel_wave_dataset.py`.
 - Signal profiling: `scripts/analyze_quasiperiodic_profile.py`.
 - Cycle-adaptive experiment recommendation: `scripts/recommend_qp_config.py`.
@@ -76,6 +78,28 @@ python scripts/prepare_quasiperiodic_wave_dataset.py \
   --val-ratio 0.15 \
   --output ./outputs/quasi_bidmc_resp_ma2s/bidmc_resp_ma2s.csv
 ```
+
+## Synthetic Benchmark Example
+
+Use this to validate the full paper pipeline on known signal types before
+running expensive public or domain data:
+
+```bash
+python scripts/generate_synthetic_quasiperiodic_dataset.py \
+  --types stable_single_freq,noisy_single_freq,am_fm_modulated,spike_event \
+  --records-per-type 8 \
+  --cycles-per-record 400 \
+  --sample-rate 100 \
+  --period-sec 1.0 \
+  --input-smooth-sec 0.12 \
+  --target-smooth-sec 0.12 \
+  --output ./outputs/synthetic_qp4/synthetic_qp4.csv
+```
+
+The generated CSV uses the same columns as public prepared data:
+`raw`, `input_smooth`, `target_smooth`, `split`, `segment_id`, and `fs`, plus
+`synthetic_type` and expected period metadata. It is intended for controlled
+ablation, not as a replacement for real datasets.
 
 ## Profile Example
 
