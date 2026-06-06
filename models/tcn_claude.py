@@ -1,5 +1,5 @@
 """
-models/Fullrestcn.py  ——  燃烧信号预测最强版
+QPWave-TCN: long-receptive-field TCN for smooth quasi-periodic waveform forecasting.
 
 架构：
   ┌─────────────────────────────────────────┐
@@ -25,7 +25,7 @@ models/Fullrestcn.py  ——  燃烧信号预测最强版
 关键设计：
   1. 实例归一化 (RevIN)：消除每个样本的均值/方差漂移
   2. 多尺度并行卷积核：同时捕获细节(k=3)、中程(k=7)、长程(k=15)模式
-  3. 频域分支：直接提取燃烧谐波结构，与时域互补
+  3. 频域分支：直接提取准周期谐波结构，与时域互补
   4. 残差输出：只学delta，降低学习难度
   5. 感受野自动裁剪：不超过 seq_len
 
@@ -213,12 +213,10 @@ class Model(nn.Module):
     def __init__(self, args):
         super().__init__()
 
-        self.task_name    = str(getattr(args, "task_name", "long_term_forecast"))
         self.seq_len      = int(args.seq_len)
         self.pred_len     = int(args.pred_len)
         self.in_channels  = int(getattr(args, "enc_in",     1))
         self.out_channels = int(getattr(args, "c_out",      1))
-        self.num_classes  = int(getattr(args, "num_classes", 2))
 
         kernel_size  = int(getattr(args,   "kernel_size",  3))
         dropout      = float(getattr(args, "dropout",      0.1))
@@ -227,7 +225,6 @@ class Model(nn.Module):
         top_k_freq   = int(getattr(args,   "top_k_freq",   128))
         freq_dim     = int(getattr(args,   "freq_dim",     128))
         self.use_revin = bool(getattr(args, "use_revin",   1))
-        self.cls_use_input_norm = bool(int(getattr(args, "cls_use_input_norm", 0)))
 
         # ── RevIN ───────────────────────────────────────────
         if self.use_revin:
@@ -239,12 +236,11 @@ class Model(nn.Module):
         self.embed = MultiScaleEmbedding(self.in_channels, embed_ch, dropout=dropout)
 
         # ── TCN 主干（感受野自动裁剪） ───────────────────────
-        max_layers = int(math.floor(math.log2(
-            (self.seq_len - 1) / max(kernel_size - 1, 1)
-        )))
+        max_layers = int(math.floor(math.log2(max((self.seq_len - 1) / max(kernel_size - 1, 1), 1))))
+        max_layers = max(1, max_layers)
         num_layers = min(int(getattr(args, "num_layers", 11)), max_layers)
         rf = (kernel_size - 1) * (2 ** num_layers - 1) + 1
-        print(f"[Fullrestcn] layers={num_layers}  RF={rf}pts  "
+        print(f"[QPWaveTCN] layers={num_layers}  RF={rf}pts  "
               f"({rf/5e6*1000:.2f}ms@5MHz)  seq_len={self.seq_len}")
 
         ch = [min(base_ch * (2 ** i), max_ch) for i in range(num_layers)]
@@ -278,17 +274,6 @@ class Model(nn.Module):
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
                 nn.init.zeros_(m.bias)
-
-        cls_hidden = int(getattr(args, "cls_hidden_dim", 256))
-        self.cls_pool_bins = int(getattr(args, "cls_pool_bins", 16))
-        self.cls_head = nn.Sequential(
-            nn.LayerNorm(tcn_hidden * (self.cls_pool_bins + 1) + freq_dim),
-            nn.Linear(tcn_hidden * (self.cls_pool_bins + 1) + freq_dim, cls_hidden),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(cls_hidden, self.num_classes),
-        )
-        self.cls_attn_score = nn.Conv1d(tcn_hidden, 1, kernel_size=1)
 
     def _to_BCL(self, x):
         if x.dim() == 2:
@@ -340,15 +325,5 @@ class Model(nn.Module):
 
         return out                                        # (B, pred_len, C_out)
 
-    def classification(self, x):
-        _, _, tcn_out, freq_feat = self._extract_features(x, apply_input_norm=self.cls_use_input_norm)
-        pooled = F.adaptive_avg_pool1d(tcn_out, self.cls_pool_bins).flatten(1)
-        attn_w = torch.softmax(self.cls_attn_score(tcn_out), dim=-1)
-        attn_pool = (tcn_out * attn_w).sum(dim=-1)
-        summary = torch.cat([pooled, attn_pool, freq_feat], dim=1)
-        return self.cls_head(summary)
-
     def forward(self, x):
-        if self.task_name == "risk_classification":
-            return self.classification(x)
         return self.forecast(x)

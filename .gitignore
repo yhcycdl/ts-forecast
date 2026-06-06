@@ -4,6 +4,7 @@ checkpoints/
 analysis/predictability_zenodo/
 analysis/predictability/
 .venv/
+.vscode/
 node_modules/
 data/
 outputs/
@@ -19,3 +20,6 @@ outputs/
 .codex
 Codex_*.md
 论文*.md
+gptfind.py
+urls_result.txt
+details_result.csv

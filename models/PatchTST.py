@@ -1,6 +1,5 @@
 import torch
 from torch import nn
-import torch.nn.functional as F
 
 from layers.Transformer_EncDec import Encoder, EncoderLayer
 from layers.SelfAttention_Family import FullAttention, AttentionLayer
@@ -70,10 +69,8 @@ class Model(nn.Module):
     """
     def __init__(self, configs):
         super().__init__()
-        self.task_name = str(getattr(configs, "task_name", "long_term_forecast"))
         self.seq_len = int(configs.seq_len)
         self.pred_len = int(configs.pred_len)
-        self.num_classes = int(getattr(configs, "num_classes", 2))
 
         # 兼容你项目常用命名
         self.in_channels = int(getattr(configs, "in_channels", getattr(configs, "enc_in", 1)))
@@ -127,18 +124,6 @@ class Model(nn.Module):
 
         self.head = FlattenHead(self.in_channels, head_nf, self.pred_len, head_dropout=dropout)
         self.patch_num = patch_num
-        self.cls_pool_bins = int(getattr(configs, "cls_pool_bins", 16))
-        cls_hidden = int(getattr(configs, "cls_hidden_dim", 256))
-        self.cls_use_input_norm = bool(int(getattr(configs, "cls_use_input_norm", 0)))
-        cls_in_dim = self.in_channels * d_model * (self.cls_pool_bins + 1)
-        self.cls_attn_score = nn.Conv1d(self.in_channels * d_model, 1, kernel_size=1)
-        self.cls_head = nn.Sequential(
-            nn.LayerNorm(cls_in_dim),
-            nn.Linear(cls_in_dim, cls_hidden),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(cls_hidden, self.num_classes),
-        )
 
     def _encode_backbone(self, x):
         x = _to_BLC(x, self.in_channels)
@@ -155,22 +140,6 @@ class Model(nn.Module):
         enc_out = enc_out.permute(0, 1, 3, 2).contiguous()  # (B,C,D,P)
         return enc_out, means, stdev
 
-    def _encode_for_classification(self, x):
-        x = _to_BLC(x, self.in_channels)
-
-        if self.cls_use_input_norm:
-            means = x.mean(dim=1, keepdim=True).detach()
-            x = x - means
-            stdev = torch.sqrt(torch.var(x, dim=1, keepdim=True, unbiased=False) + 1e-5)
-            x = x / stdev
-
-        x = x.permute(0, 2, 1).contiguous()
-        enc_in, n_vars = self.patch_embedding(x)
-        enc_out, _ = self.encoder(enc_in)
-        enc_out = enc_out.reshape(-1, n_vars, enc_out.shape[-2], enc_out.shape[-1])
-        enc_out = enc_out.permute(0, 1, 3, 2).contiguous()  # (B,C,D,P)
-        return enc_out
-
     def forecast(self, x):
         enc_out, means, stdev = self._encode_backbone(x)
         if self.out_channels != self.in_channels:
@@ -183,17 +152,5 @@ class Model(nn.Module):
         out = out + (means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1))
         return out
 
-    def classification(self, x):
-        enc_out = self._encode_for_classification(x)
-        b, c, d, p = enc_out.shape
-        feat = enc_out.reshape(b, c * d, p)
-        pooled = F.adaptive_avg_pool1d(feat, self.cls_pool_bins).flatten(1)
-        attn_w = torch.softmax(self.cls_attn_score(feat), dim=-1)
-        attn_pool = (feat * attn_w).sum(dim=-1)
-        summary = torch.cat([pooled, attn_pool], dim=1)
-        return self.cls_head(summary)
-
     def forward(self, x):
-        if self.task_name == "risk_classification":
-            return self.classification(x)
         return self.forecast(x)

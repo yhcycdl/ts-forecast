@@ -1,8 +1,6 @@
 import torch
 import torch.nn as nn
 
-from models.classification_utils import SequenceClassifierHead
-
 
 class SeriesDecomp(nn.Module):
     """
@@ -20,14 +18,19 @@ class SeriesDecomp(nn.Module):
         if k <= 1:
             raise ValueError("moving_avg kernel_size must be > 1")
         self.kernel_size = k
-        self.padding = (k - 1) // 2
-        # 用 AvgPool1d 做滑动平均：需要 (B,C,L)
-        self.avg = nn.AvgPool1d(kernel_size=k, stride=1, padding=self.padding)
+        self.avg = nn.AvgPool1d(kernel_size=k, stride=1, padding=0)
 
     def forward(self, x):
         # x: (B,L,C)
         x_bcL = x.permute(0, 2, 1)            # (B,C,L)
-        trend = self.avg(x_bcL)               # (B,C,L)
+        # Keep output length equal to input length for both odd and even kernels.
+        # AvgPool1d's symmetric padding shortens even-kernel outputs by one.
+        left = (self.kernel_size - 1) // 2
+        right = self.kernel_size - 1 - left
+        front = x_bcL[:, :, :1].repeat(1, 1, left)
+        end = x_bcL[:, :, -1:].repeat(1, 1, right)
+        padded = torch.cat([front, x_bcL, end], dim=-1)
+        trend = self.avg(padded)              # (B,C,L)
         trend = trend.permute(0, 2, 1)        # (B,L,C)
         seasonal = x - trend
         return seasonal, trend
@@ -45,14 +48,10 @@ class Model(nn.Module):
       - in_channels (或 enc_in)
       - out_channels (或 c_out)  [可选，默认=in_channels]
       - moving_avg  [必须>1]
-      - individual  [可选，默认 False]
       - out_indices [可选，list[int]，想预测哪些通道；默认全通道]
     """
     def __init__(self, configs):
         super().__init__()
-        self.task_name = str(getattr(configs, "task_name", "long_term_forecast"))
-        self.num_classes = int(getattr(configs, "num_classes", 2))
-
         self.seq_len = int(getattr(configs, "seq_len"))
         self.pred_len = int(getattr(configs, "pred_len"))
 
@@ -91,17 +90,6 @@ class Model(nn.Module):
             self.Linear_Trend = nn.Linear(self.seq_len, self.pred_len)
             self.Linear_Seasonal.weight = nn.Parameter((1 / self.seq_len) * torch.ones(self.pred_len, self.seq_len))
             self.Linear_Trend.weight = nn.Parameter((1 / self.seq_len) * torch.ones(self.pred_len, self.seq_len))
-
-        cls_hidden = int(getattr(configs, "cls_hidden_dim", 256))
-        cls_dropout = float(getattr(configs, "dropout", 0.1))
-        cls_pool_bins = int(getattr(configs, "cls_pool_bins", 16))
-        self.cls_head = SequenceClassifierHead(
-            self.c_out * 2,
-            self.num_classes,
-            hidden_dim=cls_hidden,
-            dropout=cls_dropout,
-            pool_bins=cls_pool_bins,
-        )
 
     def _prepare(self, x):
         if x.dim() == 2:
@@ -142,15 +130,5 @@ class Model(nn.Module):
         out = out.permute(0, 2, 1).contiguous()  # (B,P,C_out)
         return out
 
-    def classification(self, x):
-        seasonal, trend = self._prepare(x)
-        feat = torch.cat(
-            [seasonal.permute(0, 2, 1).contiguous(), trend.permute(0, 2, 1).contiguous()],
-            dim=1,
-        )
-        return self.cls_head(feat)
-
     def forward(self, x):
-        if self.task_name == "risk_classification":
-            return self.classification(x)
         return self.forecast(x)

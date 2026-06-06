@@ -1,37 +1,24 @@
 
+import importlib
+import os
+
 import torch
 import torch.nn as nn
 
-# 导入“模型模块”（注意：是模块，不是类）
-#from models import full_res_tcn
-from models import cnn_lstm , CRNN, GRU, fast_tcn ,Fullrestcn,spectral,inceptiontime,Dlinear,PatchTST,mamba,timemixer,tcn_claude,timemixer_claude,risk_cnn,smooth_pecnet
-import os
+
+MODEL_REGISTRY = {
+    # Main quasi-periodic waveform models and baselines.
+    "tcn_claude": "models.tcn_claude",
+    "smooth_pecnet": "models.smooth_pecnet",
+    "DLinear": "models.Dlinear",
+    "PatchTST": "models.PatchTST",
+}
+
 
 class Exp_Basic:
     def __init__(self, args):
         self.args = args
         self.device = self._acquire_device()
-
-        # TimeMixer 风格：model_dict 映射到“模块”
-        self.model_dict = {
-            "CNNLSTM": cnn_lstm,
-            "CRNN": CRNN,
-            "GRU" : GRU,
-            "fast_tcn":fast_tcn,
-            "Fullrestcn":Fullrestcn,
-            "spetical":spectral,
-            "inceptiontime": inceptiontime,
-            "DLinear":Dlinear,
-            "PatchTST":PatchTST,
-            "mamba":mamba,
-            "timemixer":timemixer,
-            "tcn_claude":tcn_claude,
-            "smooth_pecnet": smooth_pecnet,
-            "timemixer_claude":timemixer_claude,
-            "risk_cnn": risk_cnn,
-
-        }
-
         self.model = self._build_model().to(self.device)
 
     def _acquire_device(self):
@@ -40,12 +27,14 @@ class Exp_Basic:
         return torch.device("cpu")
 
     def _build_model(self):
-        if self.args.model not in self.model_dict:
+        if self.args.model not in MODEL_REGISTRY:
             raise ValueError(f"Unknown model: {self.args.model}. "
-                             f"Available: {list(self.model_dict.keys())}")
+                             f"Available: {list(MODEL_REGISTRY.keys())}")
 
-        # 关键：每个模型模块都必须提供 Model(args)
-        model = self.model_dict[self.args.model].Model(self.args).float()
+        # Each model module must expose Model(args). Import lazily so optional
+        # baselines do not make the main forecasting path depend on them.
+        module = importlib.import_module(MODEL_REGISTRY[self.args.model])
+        model = module.Model(self.args).float()
 
         if getattr(self.args, "use_multi_gpu", False) and getattr(self.args, "use_gpu", False):
             model = nn.DataParallel(model, device_ids=self.args.device_ids)

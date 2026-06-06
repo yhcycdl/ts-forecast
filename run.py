@@ -9,7 +9,6 @@ import numpy as np
 import torch
 
 from exp.exp_long_term_forecasting import Exp_Long_Term_Forecast
-from exp.exp_risk_classification import Exp_Risk_Classification
 
 def set_seed(seed):
     random.seed(seed)
@@ -72,9 +71,6 @@ def _build_setting(args, ii: int) -> str:
     if window_mode != "past":
         base += f"_wm{window_mode}_cl{int(getattr(args, 'center_left', -1))}"
 
-    if args.task_name != "long_term_forecast":
-        base += f"_nc{args.num_classes}"
-
     model_id = getattr(args, "model_id", None)
     if model_id:
         base += f"_id{_sanitize_tag(model_id, max_len=32)}"
@@ -93,8 +89,8 @@ def main():
     parser = argparse.ArgumentParser(description="Project")
 
     # ===== basic =====
-    parser.add_argument("--task_name", type=str, default="risk_classification",
-                        choices=["long_term_forecast", "risk_classification"])
+    parser.add_argument("--task_name", type=str, default="long_term_forecast",
+                        choices=["long_term_forecast"])
     parser.add_argument("--is_training", type=int, default=1)
     parser.add_argument("--itr", type=int, default=1)
     parser.add_argument("--seed", type=int, default=2026)
@@ -162,7 +158,7 @@ def main():
     parser.add_argument("--drop_last", type=int, default=0)
 
     # ===== model =====
-    parser.add_argument("--model", type=str, default='timemixer')
+    parser.add_argument("--model", type=str, default=None)
     parser.add_argument("--model_id", type=str, default=None,
                         help="optional experiment suffix to distinguish runs with different channel selections or configs")
 
@@ -195,7 +191,7 @@ def main():
     parser.add_argument("--gpu", type=int, default=2)
     parser.add_argument("--use_multi_gpu", action="store_true", default=False)
     parser.add_argument("--devices", type=str, default="0")
-    # ===== timemixer =====
+    # ===== model hyperparameters shared by current baselines =====
     parser.add_argument("--d_model", type=int, default=128)
     parser.add_argument("--d_ff", type=int, default=256)
     parser.add_argument("--dropout", type=float, default=0.1)
@@ -231,41 +227,10 @@ def main():
                         choices=["smooth_raw", "raw_smooth", "smooth_residual", "smooth_only"],
                         help="smooth_pecnet input arrangement before the TCN backbone")
 
-    # ===== risk classification =====
-    parser.add_argument("--num_classes", type=int, default=2, choices=[2, 3])
-    parser.add_argument("--label_mode", type=str, default="generated", choices=["generated", "column", "file"])
-    parser.add_argument("--label_col", type=str, default=None, help="When label_mode=column, use this column from the input CSV")
-    parser.add_argument("--label_path", type=str, default=None, help="When label_mode=file, path to point-label or window-label file")
-    parser.add_argument("--label_file_col", type=str, default=None, help="Optional label column name for external CSV label files")
-    parser.add_argument("--label_start_col", type=str, default="start_idx", help="Window-label file start index column name")
-    parser.add_argument("--label_granularity", type=str, default="auto", choices=["auto", "point", "window"],
-                        help="point: one label per timestamp; window: one label per window record with start_idx")
-    parser.add_argument("--window_label_strategy", type=str, default="last", choices=["last", "max", "majority"],
-                        help="How to aggregate pointwise labels into a future-window label")
-    parser.add_argument("--risk_label_channel", type=int, default=0, help="标签使用的目标通道索引")
-    parser.add_argument("--risk_use_ber", type=int, default=1, help="1: 使用未来窗口频带能量占比辅助打标签")
-    parser.add_argument("--sample_rate", type=float, default=1.0, help="采样率，用于 BER 计算")
-    parser.add_argument("--risk_band_low", type=float, default=0.0, help="目标频带下界")
-    parser.add_argument("--risk_band_high", type=float, default=0.0, help="目标频带上界")
-    parser.add_argument("--risk_rms_low_quantile", type=float, default=0.5)
-    parser.add_argument("--risk_rms_high_quantile", type=float, default=0.85)
-    parser.add_argument("--risk_ber_low_quantile", type=float, default=0.5)
-    parser.add_argument("--risk_ber_high_quantile", type=float, default=0.85)
-    parser.add_argument("--use_class_weights", type=int, default=1)
-    parser.add_argument("--class_weight_power", type=float, default=1.0)
-    parser.add_argument("--cls_hidden_dim", type=int, default=256)
-    parser.add_argument("--cls_pool_bins", type=int, default=16)
-    parser.add_argument("--cls_use_input_norm", type=int, default=0,
-                        help="Classification path: 1 enables sample-wise input normalization before backbone encoding")
-    parser.add_argument("--cls_use_pre_enc", type=int, default=0,
-                        help="Classification path (TimeMixer family only): 1 applies pre-encoder decomposition before backbone")
-    parser.add_argument("--cls_selection_metric", type=str, default="f1_macro",
-                        choices=["loss", "f1_macro", "balanced_accuracy", "bal_acc", "accuracy", "auprc", "auroc"])
-
     args = parser.parse_args()
 
     if args.model is None:
-        args.model = "timemixer" if args.task_name == "long_term_forecast" else "risk_cnn"
+        args.model = "tcn_claude"
     if args.loss.lower() == "hubrid":
         args.loss = "hybrid"
 
@@ -295,12 +260,10 @@ def main():
     print("Args in experiment:")
     print(args)
 
-    Exp = Exp_Long_Term_Forecast if args.task_name == "long_term_forecast" else Exp_Risk_Classification
-
     if args.is_training:
         for ii in range(args.itr):
             setting = _build_setting(args, ii)
-            exp = Exp(args)
+            exp = Exp_Long_Term_Forecast(args)
             print(f">>>>>>> start training : {setting} >>>>>>>>>>>>>>>>>>>>>>>>>>")
             exp.train(setting)
             print(f">>>>>>> testing : {setting} <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
@@ -309,7 +272,7 @@ def main():
     else:
         ii = 0
         setting = _build_setting(args, ii)
-        exp = Exp(args)
+        exp = Exp_Long_Term_Forecast(args)
         print(f">>>>>>> testing : {setting} <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
         exp.test(setting, test=1)
         torch.cuda.empty_cache()

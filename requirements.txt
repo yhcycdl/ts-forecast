@@ -1,0 +1,14 @@
+torch
+numpy
+pandas
+scipy
+scikit-learn
+matplotlib
+tqdm
+wfdb
+einops
+seaborn
+pyarrow
+openpyxl
+h5py
+tables
