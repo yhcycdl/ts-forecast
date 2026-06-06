@@ -6,8 +6,7 @@ import csv
 import json
 import math
 from pathlib import Path
-
-import numpy as np
+from typing import Any
 
 
 SIGNAL_TYPES = [
@@ -34,7 +33,9 @@ def _safe_name(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in str(value)).strip("_") or "signal"
 
 
-def _moving_average(values: np.ndarray, window: int, mode: str) -> np.ndarray:
+def _moving_average(values: Any, window: int, mode: str):
+    import numpy as np
+
     x = np.asarray(values, dtype=np.float64).reshape(-1)
     window = int(max(1, window))
     if window <= 1 or x.size <= 1:
@@ -55,7 +56,9 @@ def _moving_average(values: np.ndarray, window: int, mode: str) -> np.ndarray:
     return (cumsum[ends] - cumsum[starts]) / counts
 
 
-def _moving_average_by_split(values: np.ndarray, window: int, mode: str, split: np.ndarray) -> np.ndarray:
+def _moving_average_by_split(values: Any, window: int, mode: str, split: Any):
+    import numpy as np
+
     x = np.asarray(values, dtype=np.float64).reshape(-1)
     split = np.asarray(split, dtype=object).reshape(-1)
     if x.size != split.size:
@@ -72,7 +75,9 @@ def _moving_average_by_split(values: np.ndarray, window: int, mode: str, split: 
     return out
 
 
-def _split_for_record(record_index: int, records_per_type: int, length: int, args: argparse.Namespace) -> np.ndarray:
+def _split_for_record(record_index: int, records_per_type: int, length: int, args: argparse.Namespace):
+    import numpy as np
+
     if args.split_policy == "chronological":
         train_end = int(length * args.train_ratio)
         val_end = int(length * (args.train_ratio + args.val_ratio))
@@ -94,18 +99,24 @@ def _split_for_record(record_index: int, records_per_type: int, length: int, arg
     return np.full(length, label, dtype=object)
 
 
-def _phase_from_frequency(freq_hz: np.ndarray, fs: float, phase0: float) -> np.ndarray:
+def _phase_from_frequency(freq_hz: Any, fs: float, phase0: float):
+    import numpy as np
+
     return phase0 + 2.0 * math.pi * np.cumsum(freq_hz) / float(fs)
 
 
-def _gaussian_pulses(t: np.ndarray, centers: np.ndarray, amps: np.ndarray, widths: np.ndarray) -> np.ndarray:
+def _gaussian_pulses(t: Any, centers: Any, amps: Any, widths: Any):
+    import numpy as np
+
     out = np.zeros_like(t, dtype=np.float64)
     for center, amp, width in zip(centers, amps, widths):
         out += float(amp) * np.exp(-0.5 * ((t - float(center)) / max(float(width), 1e-12)) ** 2)
     return out
 
 
-def _generate_signal(signal_type: str, fs: float, period_sec: float, cycles: int, rng: np.random.Generator) -> tuple[np.ndarray, dict]:
+def _generate_signal(signal_type: str, fs: float, period_sec: float, cycles: int, rng: Any) -> tuple[Any, dict]:
+    import numpy as np
+
     period_sec = float(period_sec)
     duration = float(cycles) * period_sec
     n = max(16, int(round(duration * fs)))
@@ -197,6 +208,8 @@ def main() -> None:
     parser.add_argument("--val-ratio", type=float, default=0.15)
     parser.add_argument("--seed", type=int, default=2026)
     args = parser.parse_args()
+
+    import numpy as np
 
     if args.records_per_type < 3:
         raise ValueError("--records-per-type should be at least 3 for train/val/test splits.")

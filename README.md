@@ -8,11 +8,12 @@ raw spike-perfect reconstruction.
 
 1. Prepare public or domain data into long-format CSV files.
 2. Profile the signal type with `scripts/analyze_quasiperiodic_profile.py`.
-3. Generate cycle-adaptive `seq_len/pred_len/smooth_window` settings with
+3. Split mixed-type datasets when the profile reports multiple signal types.
+4. Generate cycle-adaptive `seq_len/pred_len/smooth_window` settings with
    `scripts/recommend_qp_config.py`.
-4. Train forecasting baselines and the main TCN model with `run.py`.
-5. Compare predictions with point metrics and rolling forecast plots.
-6. Summarize experiment results into paper-ready metric tables.
+5. Train forecasting baselines and the main TCN model with `run.py`.
+6. Compare predictions with point metrics and rolling forecast plots.
+7. Summarize experiment results into paper-ready metric tables.
 
 ## Active Code Surface
 
@@ -22,6 +23,7 @@ raw spike-perfect reconstruction.
   `scripts/generate_synthetic_quasiperiodic_dataset.py`.
 - Combustion pressure waveform data: `scripts/prepare_pressure_channel_wave_dataset.py`.
 - Signal profiling: `scripts/analyze_quasiperiodic_profile.py`.
+- Type-specific data splitting: `scripts/split_quasiperiodic_dataset_by_type.py`.
 - Cycle-adaptive experiment recommendation: `scripts/recommend_qp_config.py`.
 - Feature-aware augmentation: `scripts/augment_quasiperiodic_dataset.py`.
 - Experiment metric summary: `scripts/summarize_forecast_metrics.py`.
@@ -122,6 +124,26 @@ portrait" table:
   prominence, predictability score, signal type, and recommended module.
 - `profile_summary.csv`: median feature summary by signal type.
 - `profile_report.md`: compact human-readable report.
+
+If the profile shows mixed signal types, split the dataset before training:
+
+```bash
+python scripts/split_quasiperiodic_dataset_by_type.py \
+  --csv ./outputs/synthetic_qp4/synthetic_qp4.csv \
+  --type-col synthetic_type \
+  --output-dir ./outputs/synthetic_qp4/by_type
+```
+
+For real datasets without a type column, split by profile labels:
+
+```bash
+python scripts/split_quasiperiodic_dataset_by_type.py \
+  --csv ./outputs/quasi_bidmc_resp_ma2s/bidmc_resp_ma2s.csv \
+  --profile-csv ./outputs/profile_bidmc_resp/profile_by_segment.csv \
+  --segment-col segment_id \
+  --output-dir ./outputs/quasi_bidmc_resp_ma2s/by_type \
+  --drop-unknown
+```
 
 ## Cycle-Adaptive Config Example
 
