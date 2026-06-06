@@ -28,6 +28,7 @@ raw spike-perfect reconstruction.
 - Cycle-adaptive experiment recommendation: `scripts/recommend_qp_config.py`.
 - Feature-aware augmentation: `scripts/augment_quasiperiodic_dataset.py`.
 - Experiment metric summary: `scripts/summarize_forecast_metrics.py`.
+- End-to-end experiment commands: `docs/experiment_runbook.md`.
 - Literature-to-module rationale: `docs/literature_module_map.md`.
 - Optional analysis/plotting helpers remain under `scripts/`, but old risk-label
   and broken `src.data`-based scripts have been removed from the active branch.
