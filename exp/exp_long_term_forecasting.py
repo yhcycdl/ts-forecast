@@ -288,6 +288,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 print(f"Raw overlay skipped: split_col '{split_col}' not found in {csv_path}")
                 return None
             segment_col = getattr(self.args, "segment_col", None)
+            if segment_col is None and "segment_id" in df.columns:
+                segment_col = "segment_id"
             if segment_col is not None:
                 if segment_col not in df.columns:
                     print(f"Raw overlay skipped: segment_col '{segment_col}' not found in {csv_path}")

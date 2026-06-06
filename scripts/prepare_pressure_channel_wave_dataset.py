@@ -39,6 +39,23 @@ def _moving_average(values: np.ndarray, window: int, mode: str) -> np.ndarray:
     return (cumsum[ends] - cumsum[starts]) / counts
 
 
+def _moving_average_by_split(values: np.ndarray, window: int, mode: str, split: np.ndarray) -> np.ndarray:
+    values = np.asarray(values, dtype=np.float64).reshape(-1)
+    split = np.asarray(split, dtype=object).reshape(-1)
+    if values.size != split.size:
+        raise ValueError("values and split must have the same length.")
+    out = np.empty_like(values, dtype=np.float64)
+    start = 0
+    while start < values.size:
+        label = split[start]
+        end = start + 1
+        while end < values.size and split[end] == label:
+            end += 1
+        out[start:end] = _moving_average(values[start:end], window, mode)
+        start = end
+    return out
+
+
 def _load_csv_columns(csv_path: Path) -> tuple[list[str], dict[str, np.ndarray]]:
     with csv_path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
@@ -219,6 +236,7 @@ def main() -> None:
         "input_smooth_mode": args.input_smooth_mode,
         "target_smooth_window": args.target_smooth_window,
         "target_smooth_mode": args.target_smooth_mode,
+        "smooth_isolated_by_split": True,
         "output_csv": str(output_path.resolve()),
         "segments": [],
         "rows_written": 0,
@@ -262,8 +280,8 @@ def main() -> None:
 
             for col in pressure_cols:
                 raw = columns[col][mask]
-                p_input = _moving_average(raw, args.input_smooth_window, args.input_smooth_mode)
-                p_target = _moving_average(raw, args.target_smooth_window, args.target_smooth_mode)
+                p_input = _moving_average_by_split(raw, args.input_smooth_window, args.input_smooth_mode, split)
+                p_target = _moving_average_by_split(raw, args.target_smooth_window, args.target_smooth_mode, split)
                 segment_id = f"{csv_path.stem}_{col}"
                 for i in range(time.size):
                     writer.writerow(

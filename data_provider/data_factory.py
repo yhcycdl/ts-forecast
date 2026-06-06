@@ -213,6 +213,9 @@ def _forecast_data_provider(args, flag):
     if split_col is not None:
         if split_col not in df.columns:
             raise ValueError(f"split_col '{split_col}' not found in input CSV.")
+        if segment_col is None and "segment_id" in df.columns:
+            segment_col = "segment_id"
+            print("[data_provider] Using segment_col='segment_id' automatically to prevent cross-segment windows.")
         if segment_col is None:
             segment_labels = np.zeros(len(df), dtype=object)
         else:

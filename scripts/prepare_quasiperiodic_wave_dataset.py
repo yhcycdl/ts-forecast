@@ -61,6 +61,27 @@ def _moving_rms(values: np.ndarray, window: int, mode: str) -> np.ndarray:
     return np.sqrt(np.maximum(_moving_average(np.square(values), window, mode), 0.0))
 
 
+def _moving_average_by_split(values: np.ndarray, window: int, mode: str, split: np.ndarray) -> np.ndarray:
+    values = np.asarray(values, dtype=np.float64).reshape(-1)
+    split = np.asarray(split, dtype=object).reshape(-1)
+    if values.size != split.size:
+        raise ValueError("values and split must have the same length.")
+    out = np.empty_like(values, dtype=np.float64)
+    start = 0
+    while start < values.size:
+        label = split[start]
+        end = start + 1
+        while end < values.size and split[end] == label:
+            end += 1
+        out[start:end] = _moving_average(values[start:end], window, mode)
+        start = end
+    return out
+
+
+def _moving_rms_by_split(values: np.ndarray, window: int, mode: str, split: np.ndarray) -> np.ndarray:
+    return np.sqrt(np.maximum(_moving_average_by_split(np.square(values), window, mode, split), 0.0))
+
+
 def _infer_fs(time: np.ndarray) -> float | None:
     if time.size < 2:
         return None
@@ -103,7 +124,7 @@ def _standardize(values: np.ndarray) -> np.ndarray:
     return values
 
 
-def _transform(values: np.ndarray, transform: str, rms_window: int, smooth_mode: str) -> np.ndarray:
+def _transform(values: np.ndarray, transform: str, rms_window: int, smooth_mode: str, split: np.ndarray | None = None) -> np.ndarray:
     if transform == "none":
         return values
     if transform == "abs":
@@ -111,6 +132,8 @@ def _transform(values: np.ndarray, transform: str, rms_window: int, smooth_mode:
     if transform == "square":
         return np.square(values)
     if transform == "rms":
+        if split is not None:
+            return _moving_rms_by_split(values, max(1, rms_window), smooth_mode, split)
         return _moving_rms(values, max(1, rms_window), smooth_mode)
     raise ValueError(f"Unsupported transform: {transform}")
 
@@ -448,13 +471,13 @@ def main() -> None:
             values = _standardize(record.values)
             values = _crop(values, fs, args.time_start_sec, args.time_end_sec, args.max_duration_sec)
             values, fs = _resample(values, fs, args.resample_to)
+            split = _split_for_segment(idx, len(records), values.size, args)
             rms_window = max(1, int(round(args.rms_window_sec * fs)))
-            values = _transform(values, args.transform, rms_window, args.input_smooth_mode)
+            values = _transform(values, args.transform, rms_window, args.input_smooth_mode, split)
             input_window = max(1, int(round(args.input_smooth_sec * fs)))
             target_window = max(1, int(round(args.target_smooth_sec * fs)))
-            input_smooth = _moving_average(values, input_window, args.input_smooth_mode)
-            target_smooth = _moving_average(values, target_window, args.target_smooth_mode)
-            split = _split_for_segment(idx, len(records), values.size, args)
+            input_smooth = _moving_average_by_split(values, input_window, args.input_smooth_mode, split)
+            target_smooth = _moving_average_by_split(values, target_window, args.target_smooth_mode, split)
             segment_id = f"{_safe_name(record.dataset)}_{_safe_name(record.record_id)}_{_safe_name(record.signal_name)}"
             time = np.arange(values.size, dtype=np.float64) / fs
             for i in range(values.size):
@@ -503,6 +526,7 @@ def main() -> None:
         "input_smooth_mode": args.input_smooth_mode,
         "target_smooth_sec": args.target_smooth_sec,
         "target_smooth_mode": args.target_smooth_mode,
+        "smooth_isolated_by_split": True,
         "output_csv": str(output_path.resolve()),
         "rows_written": rows_written,
         "num_segments": len(segments),

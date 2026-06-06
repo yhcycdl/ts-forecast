@@ -11,6 +11,15 @@ raw spike-perfect reconstruction.
 3. Train forecasting baselines and the main TCN model with `run.py`.
 4. Compare predictions with point metrics and rolling forecast plots.
 
+## Active Code Surface
+
+- Training/evaluation: `run.py`, `exp/`, `data_provider/`, `models/`, `utils/`.
+- Public quasi-periodic data: `scripts/prepare_quasiperiodic_wave_dataset.py`.
+- Combustion pressure waveform data: `scripts/prepare_pressure_channel_wave_dataset.py`.
+- Signal profiling: `scripts/analyze_quasiperiodic_profile.py`.
+- Optional analysis/plotting helpers remain under `scripts/`, but old risk-label
+  and broken `src.data`-based scripts have been removed from the active branch.
+
 ## Core Signal Types
 
 - `stable_single_freq`: clean dominant period, low noise.

@@ -3,8 +3,12 @@ import torch.nn as nn
 import numpy as np
 from math import sqrt
 from utils.masking import TriangularCausalMask, ProbMask
-from reformer_pytorch import LSHSelfAttention
 from einops import rearrange, repeat
+
+try:
+    from reformer_pytorch import LSHSelfAttention
+except ModuleNotFoundError:
+    LSHSelfAttention = None
 
 
 class DSAttention(nn.Module):
@@ -217,6 +221,11 @@ class ReformerLayer(nn.Module):
     def __init__(self, attention, d_model, n_heads, d_keys=None,
                  d_values=None, causal=False, bucket_size=4, n_hashes=4):
         super().__init__()
+        if LSHSelfAttention is None:
+            raise ModuleNotFoundError(
+                "ReformerLayer requires reformer_pytorch. Install it only if you use ReformerLayer; "
+                "PatchTST/FullAttention do not need it."
+            )
         self.bucket_size = bucket_size
         self.attn = LSHSelfAttention(
             dim=d_model,
