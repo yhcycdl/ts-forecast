@@ -29,6 +29,15 @@ TYPE_MODULES = {
     "weak_periodic": "predictability_rejection_or_target_switch",
 }
 
+TYPE_ENHANCED_INPUTS = {
+    "stable_single_freq": "qp_main_input",
+    "noisy_single_freq": "qp_main_input,qp_residual,qp_abs_residual",
+    "am_fm_modulated": "qp_main_input,qp_envelope,qp_local_freq_ratio,qp_phase_sin,qp_phase_cos",
+    "spike_event": "qp_main_input,qp_event_proximity,qp_event_prominence,qp_event_weight",
+    "multi_freq": "qp_main_input,qp_band0_rms,qp_band1_rms,qp_band2_rms",
+    "weak_periodic": "qp_main_input,qp_predictability_score,qp_weak_periodic_flag",
+}
+
 
 def _finite_positive(values) -> np.ndarray:
     arr = pd.to_numeric(pd.Series(values), errors="coerce").to_numpy(dtype=np.float64)
@@ -131,17 +140,32 @@ def _q(value) -> str:
     return shlex.quote(str(value))
 
 
+def _split_cols(value: str) -> list[str]:
+    return [item.strip() for item in str(value).split(",") if item.strip()]
+
+
 def _format_command(parts: list[str]) -> str:
     return " \\\n  ".join(parts)
 
 
-def _command_common(args: argparse.Namespace, cfg: dict, model: str, model_id: str, input_col: str, output_col: str) -> list[str]:
+def _command_common(
+    args: argparse.Namespace,
+    cfg: dict,
+    model: str,
+    model_id: str,
+    input_col: str,
+    output_col: str,
+    csv_override: str | None = None,
+) -> list[str]:
     root_path = args.root_path
     data_path = args.data_path
-    if args.prepared_csv:
-        csv_path = Path(args.prepared_csv)
+    csv_source = csv_override or args.prepared_csv
+    if csv_source:
+        csv_path = Path(csv_source)
         root_path = str(csv_path.parent) + "/"
         data_path = csv_path.name
+    enc_in = len(_split_cols(input_col))
+    c_out = len(_split_cols(output_col))
 
     return [
         "python run.py",
@@ -153,8 +177,8 @@ def _command_common(args: argparse.Namespace, cfg: dict, model: str, model_id: s
         "--features MS",
         f"--input_cols {_q(input_col)}",
         f"--output_cols {_q(output_col)}",
-        "--enc_in 1",
-        "--c_out 1",
+        f"--enc_in {enc_in}",
+        f"--c_out {c_out}",
         "--scaler channel",
         f"--seq_len {cfg['seq_len']}",
         f"--pred_len {cfg['pred_len']}",
@@ -224,6 +248,35 @@ def _build_commands(args: argparse.Namespace, cfg: dict) -> list[dict]:
         ])
         commands.append({"name": "SmoothPECNet raw->smooth", "command": _format_command(pec)})
 
+    if args.enhanced_csv:
+        enhanced_input_cols = args.enhanced_input_cols or TYPE_ENHANCED_INPUTS.get(cfg["signal_type"], "qp_main_input")
+        enhanced_id = f"{prefix}_{cfg['signal_type']}_qpenhanced_sl{cfg['seq_len']}_pl{cfg['pred_len']}"
+        enhanced = _command_common(
+            args,
+            cfg,
+            "qpenhanced_tcn",
+            enhanced_id,
+            enhanced_input_cols,
+            args.enhanced_target_col,
+            csv_override=args.enhanced_csv,
+        )
+        enhanced.extend([
+            f"--kernel_size {cfg['kernel_size']}",
+            f"--num_layers {cfg['num_layers']}",
+            "--d_model 128",
+            "--d_ff 256",
+            "--dropout 0.1",
+            "--residual_output 1",
+            "--qpenhance_gate 1",
+            "--qpenhance_gate_hidden 32",
+            "--loss qp_hybrid",
+            "--qp_deriv_weight 0.5",
+            "--qp_envelope_weight 0.5",
+            "--qp_band_weight 0.05",
+            "--qp_event_weight 1.0",
+        ])
+        commands.append({"name": "QPEnhanced-TCN feature-aware", "command": _format_command(enhanced)})
+
     return commands
 
 
@@ -242,6 +295,13 @@ def main() -> None:
     parser.add_argument("--profile-csv", required=True, help="CSV produced by analyze_quasiperiodic_profile.py.")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--prepared-csv", default=None, help="Prepared waveform CSV; used to build runnable commands.")
+    parser.add_argument("--enhanced-csv", default=None, help="CSV produced by augment_quasiperiodic_dataset.py.")
+    parser.add_argument(
+        "--enhanced-input-cols",
+        default=None,
+        help="Comma-separated enhanced input columns for qpenhanced_tcn; default is chosen from signal_type.",
+    )
+    parser.add_argument("--enhanced-target-col", default="qp_main_target")
     parser.add_argument("--root-path", default="./outputs/")
     parser.add_argument("--data-path", default="data.csv")
     parser.add_argument("--input-col", default="input_smooth")

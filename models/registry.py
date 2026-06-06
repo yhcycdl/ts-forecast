@@ -13,6 +13,7 @@ from importlib import import_module
 MODEL_MODULES = {
     "tcn_claude": "models.tcn_claude",
     "smooth_pecnet": "models.smooth_pecnet",
+    "qpenhanced_tcn": "models.qpenhanced_tcn",
     "DLinear": "models.Dlinear",
     "PatchTST": "models.PatchTST",
 }

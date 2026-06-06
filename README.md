@@ -20,6 +20,7 @@ raw spike-perfect reconstruction.
 - Combustion pressure waveform data: `scripts/prepare_pressure_channel_wave_dataset.py`.
 - Signal profiling: `scripts/analyze_quasiperiodic_profile.py`.
 - Cycle-adaptive experiment recommendation: `scripts/recommend_qp_config.py`.
+- Feature-aware augmentation: `scripts/augment_quasiperiodic_dataset.py`.
 - Optional analysis/plotting helpers remain under `scripts/`, but old risk-label
   and broken `src.data`-based scripts have been removed from the active branch.
 
@@ -107,13 +108,52 @@ python scripts/recommend_qp_config.py \
   --gpu 1
 ```
 
+## Feature-Aware Augmentation Example
+
+Use this before the improved modules for noisy, modulated, spike-event, or
+multi-frequency signals:
+
+```bash
+python scripts/augment_quasiperiodic_dataset.py \
+  --csv ./outputs/quasi_bidmc_resp_ma2s/bidmc_resp_ma2s.csv \
+  --profile-csv ./outputs/profile_bidmc_resp/profile_by_segment.csv \
+  --output ./outputs/quasi_bidmc_resp_ma2s/bidmc_resp_ma2s_aug.csv \
+  --raw-col raw \
+  --segment-col segment_id \
+  --split-col split
+```
+
+The augmented CSV adds reusable `qp_*` columns:
+
+- `qp_main_input`, `qp_main_target`, `qp_residual`: main-wave/residual
+  decomposition for noisy dominant-period signals.
+- `qp_envelope`, `qp_local_freq_ratio`, `qp_phase_sin`, `qp_phase_cos`:
+  conditioning features for amplitude/frequency modulation.
+- `qp_event_mask`, `qp_event_prominence`, `qp_event_proximity`,
+  `qp_event_weight`: event skeleton features for ECG/PPG/impact-like signals.
+- `qp_band0_rms`, `qp_band1_rms`, `qp_band2_rms`: relative band energy
+  features for multi-frequency or mode-switching signals.
+- `qp_predictability_score`, `qp_weak_periodic_flag`: rejection/target-switch
+  indicators for weak-periodic boundary cases.
+
+Then generate commands including the enhanced model:
+
+```bash
+python scripts/recommend_qp_config.py \
+  --profile-csv ./outputs/profile_bidmc_resp/profile_by_segment.csv \
+  --prepared-csv ./outputs/quasi_bidmc_resp_ma2s/bidmc_resp_ma2s.csv \
+  --enhanced-csv ./outputs/quasi_bidmc_resp_ma2s/bidmc_resp_ma2s_aug.csv \
+  --output-dir ./outputs/profile_bidmc_resp/recommend \
+  --model-id-prefix bidmc_resp \
+  --gpu 1
+```
+
 This writes:
 
 - `recommended_qp_config.json`: dataset-level and type-level recommended
   periods, `seq_len`, `pred_len`, stride, smoothing window, and module.
 - `recommended_train_commands.sh`: runnable commands for QPWave-TCN, DLinear,
-  PatchTST, and SmoothPECNet when the signal type benefits from raw->smooth
-  decomposition.
+  PatchTST, SmoothPECNet, and `qpenhanced_tcn` when an enhanced CSV is provided.
 
 Default policy is roughly `10` past cycles as input and `3-4` future cycles as
 output. Weak-periodic boundary cases are intentionally shortened because they
@@ -162,6 +202,9 @@ python run.py \
 - For `raw -> smooth`, avoid forcing the model to continue from the raw last
   value. Use `--residual_output 0 --use_revin 0`, or use `smooth_pecnet`
   with `--smoothpec_mode smooth_raw` so the smooth branch is first.
+- For feature-aware runs, use `--model qpenhanced_tcn` with enhanced `qp_*`
+  input columns and `--loss qp_hybrid`. This keeps the same QPWave-TCN backbone
+  but adds channel gating and event/envelope/frequency-aware loss terms.
 - `hybrid` loss keeps the FFT term magnitude-only by default. If input and
   target are not the same waveform quantity, set `--cont_weight 0`.
 - `DLinear` and `PatchTST` are baselines. For clean comparisons, run them with

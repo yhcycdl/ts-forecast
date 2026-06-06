@@ -47,7 +47,7 @@ def _looks_like_same_waveform(input_col: str, output_col: str) -> bool:
         return True
     if ("raw" in a) != ("raw" in b):
         return False
-    smooth_tokens = ("smooth", "ma", "cma")
+    smooth_tokens = ("smooth", "ma", "cma", "main")
     if any(t in a for t in smooth_tokens) and any(t in b for t in smooth_tokens):
         return True
     return False
@@ -101,16 +101,16 @@ def _validate_experiment_args(args) -> None:
             )
 
         same_first = _looks_like_same_waveform(input_cols[0], output_cols[0])
-        if args.model == "tcn_claude" and not same_first:
+        if args.model in {"tcn_claude", "qpenhanced_tcn"} and not same_first:
             if int(getattr(args, "residual_output", 1)):
                 print(
-                    "[WARN] tcn_claude residual_output assumes the first input channel and target "
+                    f"[WARN] {args.model} residual_output assumes the first input channel and target "
                     "are the same waveform quantity. For raw->smooth or other transformed targets, "
                     "prefer --residual_output 0 or use smooth_pecnet with a smooth first branch."
                 )
             if int(getattr(args, "use_revin", 1)):
                 print(
-                    "[WARN] tcn_claude RevIN denormalizes with input-window statistics. "
+                    f"[WARN] {args.model} RevIN denormalizes with input-window statistics. "
                     "This is safest for smooth->smooth / same-quantity forecasting; "
                     "for raw->smooth, consider --use_revin 0 together with --residual_output 0."
                 )
@@ -128,10 +128,10 @@ def _validate_experiment_args(args) -> None:
                 "input channel and target. For raw->smooth/event targets, set --cont_weight 0."
             )
 
-    if args.sample_weight_col and args.loss.lower() == "hybrid":
-        raise ValueError("--sample_weight_col is not supported with --loss hybrid.")
+    if args.sample_weight_col and args.loss.lower() in {"hybrid", "qp_hybrid"}:
+        raise ValueError("--sample_weight_col is not supported with --loss hybrid/qp_hybrid.")
 
-    if args.model in {"tcn_claude", "smooth_pecnet"}:
+    if args.model in {"tcn_claude", "smooth_pecnet", "qpenhanced_tcn"}:
         _require_positive(args, ["kernel_size", "num_layers", "base_ch", "max_ch", "top_k_freq", "freq_dim"])
         if args.kernel_size < 2:
             raise ValueError("--kernel_size must be >= 2 for TCN models.")
@@ -141,6 +141,10 @@ def _validate_experiment_args(args) -> None:
             raise ValueError("--max_ch must be >= --base_ch.")
         if args.smoothpec_window < 1:
             raise ValueError("--smoothpec_window must be >= 1.")
+    if args.model == "qpenhanced_tcn":
+        _require_positive(args, ["qpenhance_gate_hidden"])
+        if not 0.0 <= args.qpenhance_input_dropout < 1.0:
+            raise ValueError("--qpenhance_input_dropout must be in [0, 1).")
 
     if args.model == "PatchTST":
         _require_positive(args, ["patch_len", "patch_stride", "n_heads", "factor", "d_model", "d_ff"])
@@ -152,6 +156,13 @@ def _validate_experiment_args(args) -> None:
     if args.model == "DLinear":
         if args.moving_avg <= 1:
             raise ValueError("--moving_avg must be > 1 for DLinear.")
+
+    if args.loss.lower() == "qp_hybrid":
+        for name in ["qp_deriv_weight", "qp_envelope_weight", "qp_band_weight", "qp_event_weight"]:
+            if getattr(args, name) < 0:
+                raise ValueError(f"--{name} must be non-negative.")
+        if args.qp_envelope_window < 1:
+            raise ValueError("--qp_envelope_window must be >= 1.")
 
 
 def _build_setting(args, ii: int) -> str:
@@ -297,7 +308,7 @@ def main():
 
 
     # ===== loss =====
-    parser.add_argument('--loss',type=str, default='MSE',choices=['MSE','hybrid','hubrid','mae','huber','wmse'])
+    parser.add_argument('--loss',type=str, default='MSE',choices=['MSE','hybrid','hubrid','mae','huber','wmse','qp_hybrid'])
     parser.add_argument("--fft_weight", type=float, default=0.1)
     parser.add_argument("--deriv_weight", type=float, default=1.0)
     parser.add_argument("--cont_weight", type=float, default=5.0)
@@ -305,6 +316,16 @@ def main():
                         help="optional wrapped FFT phase penalty inside hybrid loss; default 0 keeps frequency loss magnitude-only")
     parser.add_argument("--huber_beta", type=float, default=0.3)
     parser.add_argument("--wmse_alpha", type=float, default=1.0)
+    parser.add_argument("--qp_deriv_weight", type=float, default=0.5,
+                        help="qp_hybrid derivative consistency weight")
+    parser.add_argument("--qp_envelope_weight", type=float, default=0.5,
+                        help="qp_hybrid local-RMS envelope weight")
+    parser.add_argument("--qp_band_weight", type=float, default=0.05,
+                        help="qp_hybrid log-spectrum magnitude weight")
+    parser.add_argument("--qp_event_weight", type=float, default=1.0,
+                        help="qp_hybrid target-driven event emphasis")
+    parser.add_argument("--qp_envelope_window", type=int, default=9,
+                        help="qp_hybrid local RMS window in forecast samples")
 
     # ===== optim/train =====
     parser.add_argument("--train_epochs", type=int, default=40)
@@ -371,6 +392,12 @@ def main():
     parser.add_argument("--smoothpec_mode", type=str, default="smooth_raw",
                         choices=["smooth_raw", "raw_smooth", "smooth_residual", "smooth_only"],
                         help="smooth_pecnet input arrangement before the TCN backbone")
+    parser.add_argument("--qpenhance_gate", type=int, default=1, choices=[0, 1],
+                        help="qpenhanced_tcn: enable feature-channel gate")
+    parser.add_argument("--qpenhance_gate_hidden", type=int, default=32,
+                        help="qpenhanced_tcn channel-gate hidden width")
+    parser.add_argument("--qpenhance_input_dropout", type=float, default=0.0,
+                        help="qpenhanced_tcn dropout on enhanced input channels")
 
     args = parser.parse_args()
     _validate_experiment_args(args)

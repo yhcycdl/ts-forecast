@@ -154,6 +154,96 @@ class WeightedMSE(nn.Module):
         return torch.mean(w * (pred - target) ** 2)
 
 
+def _to_bcp_for_loss(x: torch.Tensor) -> torch.Tensor:
+    if x.dim() == 2:
+        return x.unsqueeze(1)
+    if x.dim() != 3:
+        raise ValueError(f"Expected tensor dim 2 or 3, got {tuple(x.shape)}")
+    if x.shape[1] <= x.shape[2] and x.shape[1] <= 16:
+        return x
+    return x.transpose(1, 2).contiguous()
+
+
+def _local_rms_torch(x_bcp: torch.Tensor, window: int) -> torch.Tensor:
+    import torch.nn.functional as F
+
+    window = max(1, int(window))
+    if window <= 1:
+        return torch.abs(x_bcp)
+    left = (window - 1) // 2
+    right = window - 1 - left
+    padded = F.pad(x_bcp.square(), (left, right), mode="replicate")
+    rms = F.avg_pool1d(padded, kernel_size=window, stride=1)
+    return torch.sqrt(torch.clamp(rms, min=1e-12))
+
+
+class QPHybridLoss(nn.Module):
+    """Feature-aware differentiable loss for complex quasi-periodic signals.
+
+    Terms:
+      - robust point loss for the main waveform
+      - derivative loss for phase/slope consistency
+      - local-RMS envelope loss for AM signals
+      - log spectrum magnitude loss for multi-frequency signals
+      - target-driven event weighting for spike-like signals
+    """
+
+    def __init__(
+        self,
+        deriv_weight=0.5,
+        envelope_weight=0.5,
+        band_weight=0.05,
+        event_weight=1.0,
+        envelope_window=9,
+        huber_beta=0.3,
+    ):
+        super().__init__()
+        self.deriv_weight = float(deriv_weight)
+        self.envelope_weight = float(envelope_weight)
+        self.band_weight = float(band_weight)
+        self.event_weight = float(event_weight)
+        self.envelope_window = int(envelope_window)
+        self.huber_beta = float(huber_beta)
+
+    def _event_salience(self, target_bcp: torch.Tensor) -> torch.Tensor:
+        centered = target_bcp - target_bcp.mean(dim=-1, keepdim=True)
+        amp = torch.abs(centered)
+        amp = amp / torch.clamp(amp.mean(dim=-1, keepdim=True), min=1e-6)
+        deriv = torch.diff(target_bcp, dim=-1, prepend=target_bcp[..., :1])
+        deriv = torch.abs(deriv) / torch.clamp(torch.abs(deriv).mean(dim=-1, keepdim=True), min=1e-6)
+        return torch.clamp(0.5 * amp + 0.5 * deriv, min=0.0, max=10.0)
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor):
+        pred, target = _align_pred_target(pred, target)
+        pred_bcp = _to_bcp_for_loss(pred)
+        target_bcp = _to_bcp_for_loss(target)
+        if tuple(pred_bcp.shape) != tuple(target_bcp.shape):
+            raise ValueError(f"QPHybridLoss shape mismatch: pred={tuple(pred_bcp.shape)}, target={tuple(target_bcp.shape)}")
+
+        point = nn.functional.smooth_l1_loss(pred_bcp, target_bcp, beta=self.huber_beta, reduction="none")
+        if self.event_weight > 0:
+            salience = self._event_salience(target_bcp)
+            point = point * (1.0 + self.event_weight * salience)
+        loss = point.mean()
+
+        if self.deriv_weight > 0 and pred_bcp.shape[-1] > 1:
+            pred_d = torch.diff(pred_bcp, dim=-1)
+            target_d = torch.diff(target_bcp, dim=-1)
+            loss = loss + self.deriv_weight * nn.functional.smooth_l1_loss(pred_d, target_d, beta=self.huber_beta)
+
+        if self.envelope_weight > 0:
+            pred_env = _local_rms_torch(pred_bcp, self.envelope_window)
+            target_env = _local_rms_torch(target_bcp, self.envelope_window)
+            loss = loss + self.envelope_weight * nn.functional.l1_loss(pred_env, target_env)
+
+        if self.band_weight > 0 and pred_bcp.shape[-1] > 2:
+            pred_fft = torch.log1p(torch.abs(torch.fft.rfft(pred_bcp, dim=-1)))
+            target_fft = torch.log1p(torch.abs(torch.fft.rfft(target_bcp, dim=-1)))
+            loss = loss + self.band_weight * nn.functional.l1_loss(pred_fft, target_fft)
+
+        return loss
+
+
 def build_criterion(args):
     name = args.loss.lower()
 
@@ -176,5 +266,15 @@ def build_criterion(args):
 
     if name == "wmse":
         return WeightedMSE(alpha=float(getattr(args, "wmse_alpha", 1.0)))
+
+    if name == "qp_hybrid":
+        return QPHybridLoss(
+            deriv_weight=getattr(args, "qp_deriv_weight", 0.5),
+            envelope_weight=getattr(args, "qp_envelope_weight", 0.5),
+            band_weight=getattr(args, "qp_band_weight", 0.05),
+            event_weight=getattr(args, "qp_event_weight", 1.0),
+            envelope_window=getattr(args, "qp_envelope_window", 9),
+            huber_beta=getattr(args, "huber_beta", 0.3),
+        )
 
     raise ValueError(f"Unknown loss: {args.loss}")
