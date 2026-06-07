@@ -27,6 +27,7 @@ raw spike-perfect reconstruction.
 - Type-specific experiment planning: `scripts/build_qp_experiment_plan.py`.
 - Cycle-adaptive experiment recommendation: `scripts/recommend_qp_config.py`.
 - Feature-aware augmentation: `scripts/augment_quasiperiodic_dataset.py`.
+- Model shape smoke tests: `scripts/smoke_forecast_models.py`.
 - Experiment metric summary: `scripts/summarize_forecast_metrics.py`.
 - End-to-end experiment commands: `docs/experiment_runbook.md`.
 - Literature-to-module rationale: `docs/literature_module_map.md`.
@@ -236,6 +237,11 @@ This writes:
   PatchTST, CycleResidual-TCN, SmoothPECNet, and `qpenhanced_tcn` when an
   enhanced CSV is provided.
 
+Pass `--include-legacy-baselines` to `scripts/recommend_qp_config.py` or
+`scripts/build_qp_experiment_plan.py` when you also want the restored legacy
+baselines: `GRU`, `CNNLSTM`, `CRNN`, `InceptionTime`, `FastTCN`,
+`SpectralCNN`, and `TimeMixer`.
+
 Default policy is roughly `10` past cycles as input and `3-4` future cycles as
 output. Weak-periodic boundary cases are intentionally shortened because they
 are not good long-horizon point-forecast targets.
@@ -291,10 +297,20 @@ python run.py \
   but adds channel gating and event/envelope/frequency/shape-aware loss terms.
 - `hybrid` loss keeps the FFT term magnitude-only by default. If input and
   target are not the same waveform quantity, set `--cont_weight 0`.
-- `DLinear` and `PatchTST` are baselines. For clean comparisons, run them with
-  single-input/single-output or one-to-one input/output columns.
+- `DLinear`, `PatchTST`, and the restored legacy models are baselines. For
+  clean comparisons, run them with single-input/single-output or one-to-one
+  input/output columns; keep legacy baselines optional so the main experiment
+  matrix stays readable.
 - Training now rejects prediction/target shape mismatches instead of allowing
   PyTorch broadcasting. If a run errors there, the old metric was not reliable.
+
+Before large runs on a fresh server, run:
+
+```bash
+python scripts/smoke_forecast_models.py
+```
+
+This checks registered model input/output shapes on CPU.
 
 ## Result Summary
 

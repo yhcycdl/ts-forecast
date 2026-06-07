@@ -227,7 +227,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 )
 
         state = torch.load(load_path, map_location=self.device)
-        self.model.load_state_dict(state)
+        self.model.load_state_dict(state, strict=bool(getattr(self.args, "pretrained_strict", 1)))
         self.model.eval()
 
         # load dataset/scaler

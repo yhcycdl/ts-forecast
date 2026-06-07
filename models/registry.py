@@ -17,6 +17,13 @@ MODEL_MODULES = {
     "cycle_residual_tcn": "models.cycle_residual_tcn",
     "DLinear": "models.Dlinear",
     "PatchTST": "models.PatchTST",
+    "GRU": "models.GRU",
+    "CNNLSTM": "models.cnn_lstm",
+    "CRNN": "models.CRNN",
+    "InceptionTime": "models.inceptiontime",
+    "FastTCN": "models.fast_tcn",
+    "SpectralCNN": "models.spectral",
+    "TimeMixer": "models.timemixer",
 }
 
 MODEL_NAMES = tuple(MODEL_MODULES.keys())

@@ -16,7 +16,8 @@ conservative.
 | Type-specific experiment planning | `scripts/build_qp_experiment_plan.py` | Ready |
 | Main waveform / residual augmentation | `scripts/augment_quasiperiodic_dataset.py`, `utils/qperiod_enhance.py` | Ready |
 | Causal envelope/frequency/band features | `scripts/augment_quasiperiodic_dataset.py`, `utils/qperiod_enhance.py` | Ready; offline mode is diagnostic only |
-| Baselines | `DLinear`, `PatchTST`, `tcn_claude`, `smooth_pecnet` | Ready |
+| Core baselines and backbone | `DLinear`, `PatchTST`, `tcn_claude`, `smooth_pecnet` | Ready |
+| Optional legacy baselines | `GRU`, `CNNLSTM`, `CRNN`, `InceptionTime`, `FastTCN`, `SpectralCNN`, `TimeMixer` | Restored for wider comparison; keep optional in scripts |
 | Cycle-template residual prior | `models/cycle_residual_tcn.py` | Ready; useful for stable/noisy dominant-period data |
 | Feature-aware TCN wrapper | `models/qpenhanced_tcn.py` | Ready as a lightweight feature-gated TCN |
 | Structure-aware loss | `utils/losses.py::QPHybridLoss` | Ready as differentiable waveform/envelope/spectrum/event-salience/correlation/multiscale/peak-pool loss |
@@ -57,10 +58,11 @@ For each signal type or dataset subset:
 
 1. DLinear baseline.
 2. PatchTST baseline.
-3. QPWave-TCN smooth-to-smooth.
-4. CycleResidual-TCN for dominant-period main-waveform data.
-5. SmoothPECNet raw-to-smooth for noisy/modulated/spike data.
-6. QPEnhanced-TCN with causal `qp_*` features.
+3. Optional restored legacy baselines when a wider comparison table is needed.
+4. QPWave-TCN smooth-to-smooth.
+5. CycleResidual-TCN for dominant-period main-waveform data.
+6. SmoothPECNet raw-to-smooth for noisy/modulated/spike data.
+7. QPEnhanced-TCN with causal `qp_*` features.
 
 Report:
 

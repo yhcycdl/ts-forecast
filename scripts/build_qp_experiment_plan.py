@@ -97,6 +97,8 @@ def _recommend_command(
     ]
     if args.include_smoothpec:
         parts.append("--include-smoothpec")
+    if args.include_legacy_baselines:
+        parts.append("--include-legacy-baselines")
     if args.input_cycles > 0:
         parts.append(f"--input-cycles {args.input_cycles}")
     if args.output_cycles > 0:
@@ -143,6 +145,11 @@ def main() -> None:
     parser.add_argument("--input-cycles", type=int, default=0, help="Optional override passed to recommend_qp_config.py.")
     parser.add_argument("--output-cycles", type=int, default=0, help="Optional override passed to recommend_qp_config.py.")
     parser.add_argument("--include-smoothpec", action="store_true")
+    parser.add_argument(
+        "--include-legacy-baselines",
+        action="store_true",
+        help="Pass through restored GRU/CNNLSTM/CRNN/InceptionTime/FastTCN/SpectralCNN/TimeMixer baselines.",
+    )
     parser.add_argument("--reprofile", action="store_true", help="Ignore profile subsets in split metadata and recompute profiles per type.")
     args = parser.parse_args()
 

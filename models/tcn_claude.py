@@ -86,12 +86,21 @@ class RevIN(nn.Module):
 
     def denorm_subset(self, x, out_channels: int):
         out_channels = int(out_channels)
+        in_channels = int(self._mean.shape[1])
         if self.affine:
-            bias = self.bias[:out_channels][None, :, None]
-            weight = self.weight[:out_channels][None, :, None]
+            if out_channels > in_channels:
+                bias = self.bias[:1][None, :, None].expand(1, out_channels, 1)
+                weight = self.weight[:1][None, :, None].expand(1, out_channels, 1)
+            else:
+                bias = self.bias[:out_channels][None, :, None]
+                weight = self.weight[:out_channels][None, :, None]
             x = (x - bias) / (weight + self.eps)
-        mean = self._mean[:, :out_channels, :]
-        std = self._std[:, :out_channels, :]
+        if out_channels > in_channels:
+            mean = self._mean[:, :1, :].expand(-1, out_channels, -1)
+            std = self._std[:, :1, :].expand(-1, out_channels, -1)
+        else:
+            mean = self._mean[:, :out_channels, :]
+            std = self._std[:, :out_channels, :]
         return x * std + mean
 
 
@@ -304,7 +313,10 @@ class Model(nn.Module):
             x = self.revin(x, 'norm')
 
         # 2. 记录最后已知值（用于残差输出）
-        last_val = x[:, :self.out_channels, -1].unsqueeze(1)  # (B, 1, C_out)
+        if self.out_channels <= self.in_channels:
+            last_val = x[:, :self.out_channels, -1].unsqueeze(1)  # (B, 1, C_out)
+        else:
+            last_val = x[:, :1, -1].unsqueeze(1).expand(-1, 1, self.out_channels)
 
         # 3. 时域：多尺度嵌入 → TCN → 最后一步
         feat      = self.embed(x)                         # (B, embed_ch, L)

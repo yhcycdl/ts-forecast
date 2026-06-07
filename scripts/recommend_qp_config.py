@@ -258,6 +258,35 @@ def _build_commands(args: argparse.Namespace, cfg: dict) -> list[dict]:
     ])
     commands.append({"name": "PatchTST baseline", "command": _format_command(patch)})
 
+    if args.include_legacy_baselines:
+        legacy_models = [
+            ("GRU", "GRU recurrent baseline", []),
+            ("CNNLSTM", "CNN-LSTM attention baseline", []),
+            ("CRNN", "CRNN residual-conv recurrent baseline", []),
+            ("InceptionTime", "InceptionTime convolutional baseline", ["--d_model 64", "--e_layers 6"]),
+            ("FastTCN", "FastTCN causal-conv baseline", []),
+            ("SpectralCNN", "SpectralCNN residual baseline", []),
+            (
+                "TimeMixer",
+                "TimeMixer decomposition baseline",
+                [
+                    "--d_model 128",
+                    "--d_ff 256",
+                    "--e_layers 2",
+                    f"--moving_avg {max(3, cfg['smooth_window_samples'])}",
+                    "--down_sampling_window 2",
+                    "--down_sampling_layers 2",
+                    "--down_sampling_method avg",
+                    "--channel_independence 0",
+                ],
+            ),
+        ]
+        for model_name, label, extra_args in legacy_models:
+            legacy_id = f"{prefix}_{cfg['signal_type']}_{model_name.lower()}_sl{cfg['seq_len']}_pl{cfg['pred_len']}"
+            legacy = _command_common(args, cfg, model_name, legacy_id, args.input_col, args.output_col)
+            legacy.extend(extra_args)
+            commands.append({"name": label, "command": _format_command(legacy)})
+
     use_smoothpec = args.include_smoothpec or cfg["signal_type"] in {"noisy_single_freq", "am_fm_modulated", "spike_event"}
     if use_smoothpec:
         pec_id = f"{prefix}_{cfg['signal_type']}_smoothpec_sl{cfg['seq_len']}_pl{cfg['pred_len']}"
@@ -355,6 +384,8 @@ def main() -> None:
     parser.add_argument("--train-epochs", type=int, default=40)
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--include-smoothpec", action="store_true", help="Always include raw->smooth SmoothPECNet command.")
+    parser.add_argument("--include-legacy-baselines", action="store_true",
+                        help="Include restored GRU/CNNLSTM/CRNN/InceptionTime/FastTCN/SpectralCNN/TimeMixer baselines.")
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)

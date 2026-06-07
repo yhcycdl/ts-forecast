@@ -115,7 +115,18 @@ def _validate_experiment_args(args) -> None:
                     "for raw->smooth, consider --use_revin 0 together with --residual_output 0."
                 )
 
-        if args.model in {"DLinear", "PatchTST"} and len(input_cols) != len(output_cols):
+        legacy_baselines = {
+            "DLinear",
+            "PatchTST",
+            "GRU",
+            "CNNLSTM",
+            "CRNN",
+            "InceptionTime",
+            "FastTCN",
+            "SpectralCNN",
+            "TimeMixer",
+        }
+        if args.model in legacy_baselines and len(input_cols) != len(output_cols):
             print(
                 f"[WARN] {args.model} is a baseline with weak semantic mapping for "
                 "multi-input -> fewer-output explicit IO. Use single-input experiments or "
@@ -156,10 +167,25 @@ def _validate_experiment_args(args) -> None:
             raise ValueError("--patch_len must be <= --seq_len.")
         if args.d_model % args.n_heads != 0:
             raise ValueError("--d_model must be divisible by --n_heads for PatchTST.")
+        if args.c_out > args.enc_in:
+            raise ValueError("PatchTST baseline requires --c_out <= --enc_in.")
 
     if args.model == "DLinear":
         if args.moving_avg <= 1:
             raise ValueError("--moving_avg must be > 1 for DLinear.")
+
+    if args.model == "TimeMixer":
+        if args.moving_avg <= 1:
+            raise ValueError("--moving_avg must be > 1 for TimeMixer.")
+        if args.down_sampling_window <= 1:
+            raise ValueError("--down_sampling_window must be > 1 for TimeMixer.")
+        if args.down_sampling_layers < 0:
+            raise ValueError("--down_sampling_layers must be >= 0 for TimeMixer.")
+        if args.seq_len // (args.down_sampling_window ** args.down_sampling_layers) < 1:
+            raise ValueError(
+                "TimeMixer down-sampling is too deep: require "
+                "seq_len // down_sampling_window**down_sampling_layers >= 1."
+            )
 
     if args.loss.lower() == "qp_hybrid":
         for name in [
@@ -381,6 +407,22 @@ def main():
     parser.add_argument("--e_layers", type=int, default=2)
 
     parser.add_argument("--moving_avg", type=int, default=25)
+    parser.add_argument("--decomp_method", type=str, default="moving_avg",
+                        choices=["moving_avg", "dft_decomp"],
+                        help="TimeMixer decomposition method")
+    parser.add_argument("--top_k", type=int, default=5,
+                        help="TimeMixer DFT decomposition top-k frequencies")
+    parser.add_argument("--down_sampling_window", type=int, default=2,
+                        help="TimeMixer down-sampling window")
+    parser.add_argument("--down_sampling_layers", type=int, default=2,
+                        help="TimeMixer number of down-sampling scales")
+    parser.add_argument("--down_sampling_method", type=str, default="avg",
+                        choices=["avg", "max", "conv"],
+                        help="TimeMixer down-sampling method")
+    parser.add_argument("--channel_independence", type=int, default=0, choices=[0, 1],
+                        help="TimeMixer channel-independence mode")
+    parser.add_argument("--use_norm", type=int, default=1, choices=[0, 1],
+                        help="TimeMixer input normalization switch")
     parser.add_argument("--individual", type=int, default=0, choices=[0, 1],
                         help="DLinear: use one linear head per output channel")
     parser.add_argument("--patch_len", type=int, default=16,

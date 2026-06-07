@@ -50,6 +50,12 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 pip install -r requirements.txt
 ```
 
+Run a model-interface smoke test before long jobs:
+
+```bash
+python scripts/smoke_forecast_models.py
+```
+
 ## 1. Experiment Logic
 
 Use the same pipeline for every dataset:
@@ -71,6 +77,11 @@ Model matrix:
 - `cycle_residual_tcn`: cycle-template prior plus TCN residual.
 - `smooth_pecnet`: raw-to-smooth main waveform module.
 - `qpenhanced_tcn`: feature-gated TCN with `qp_hybrid` structure-aware loss.
+
+Optional restored legacy baselines are available but not included by default:
+`GRU`, `CNNLSTM`, `CRNN`, `InceptionTime`, `FastTCN`, `SpectralCNN`, and
+`TimeMixer`. Add `--include-legacy-baselines` to the plan/recommend commands
+when you need a wider comparison table.
 
 Important default policy:
 
@@ -156,6 +167,9 @@ This writes:
 
 - `./outputs/synthetic_qp6/plan/prepare_qp_experiments.sh`
 - `./outputs/synthetic_qp6/plan/run_all_train_commands.sh`
+
+To include restored legacy baselines in every generated training script, add
+`--include-legacy-baselines` to the `build_qp_experiment_plan.py` command.
 
 Run preparation:
 
@@ -807,6 +821,7 @@ For each signal type, compare:
 |---|---|
 | DLinear | decomposition-linear strong baseline |
 | PatchTST | patch Transformer strong baseline |
+| GRU/CNNLSTM/CRNN/InceptionTime/FastTCN/SpectralCNN/TimeMixer | optional restored legacy baselines for wider comparison |
 | QPWave-TCN | current neural main-waveform backbone |
 | CycleResidual-TCN | tests whether explicit cycle prior helps |
 | SmoothPECNet | tests raw-to-main decomposition for noisy signals |
