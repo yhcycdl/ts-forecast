@@ -238,26 +238,66 @@ for name, path in datasets.items():
 PY
 ```
 
+If the server already has compressed packages for `bidmc`, `fantasia`, and
+`mitdb`, put them anywhere under `./data` and run the cleaning entry point
+instead of downloading again. It will find archives or extracted folders,
+extract archives into `./data/extracted`, write cleaned long-format CSV files,
+and write one per-record quality report per dataset.
+
+Dry-run first:
+
+```bash
+python scripts/prepare_public_quasiperiodic_data.py --dry-run
+```
+
+Prepare and profile all three public datasets:
+
+```bash
+python scripts/prepare_public_quasiperiodic_data.py \
+  --data-root ./data \
+  --extract-root ./data/extracted \
+  --output-root ./outputs \
+  --bad-record-policy error \
+  --min-finite-ratio 0.995 \
+  --robust-clip-z 12
+```
+
+If one public record is genuinely damaged, switch to `--bad-record-policy skip`
+and inspect the generated `*.quality.csv` before training. Do not silently skip
+records for final experiments.
+
+Quality reports:
+
+```bash
+python - <<'PY'
+import pandas as pd
+from pathlib import Path
+
+for path in sorted(Path("./outputs").glob("quasi_*/*.quality.csv")):
+    df = pd.read_csv(path)
+    print("\n", path)
+    print(df[["status", "record_id", "signal_name", "cropped_finite_ratio", "clipped_low_rows", "clipped_high_rows"]].head())
+    print(df["status"].value_counts(dropna=False))
+PY
+```
+
 List signals if needed:
 
 ```bash
 python scripts/prepare_quasiperiodic_wave_dataset.py \
   --dataset bidmc \
   --sources ./data/extracted/bidmc \
-  --list-signals \
-  --output /tmp/bidmc_dummy.csv
+  --list-signals
 
 python scripts/prepare_quasiperiodic_wave_dataset.py \
   --dataset fantasia \
   --sources ./data/extracted/fantasia \
-  --list-signals \
-  --output /tmp/fantasia_dummy.csv
+  --list-signals
 
 python scripts/prepare_quasiperiodic_wave_dataset.py \
   --dataset mitdb \
   --sources ./data/extracted/mitdb \
-  --list-signals \
-  --output /tmp/mitdb_dummy.csv
+  --list-signals
 ```
 
 ## 4. Public Dataset A: BIDMC RESP
@@ -279,6 +319,8 @@ python scripts/prepare_quasiperiodic_wave_dataset.py \
   --input-smooth-mode causal \
   --target-smooth-sec 2.0 \
   --target-smooth-mode centered \
+  --min-finite-ratio 0.995 \
+  --robust-clip-z 12 \
   --split-policy by_record \
   --train-ratio 0.7 \
   --val-ratio 0.15 \
@@ -349,6 +391,8 @@ python scripts/prepare_quasiperiodic_wave_dataset.py \
   --input-smooth-mode causal \
   --target-smooth-sec 2.0 \
   --target-smooth-mode centered \
+  --min-finite-ratio 0.995 \
+  --robust-clip-z 12 \
   --split-policy by_record \
   --train-ratio 0.7 \
   --val-ratio 0.15 \
@@ -412,6 +456,8 @@ python scripts/prepare_quasiperiodic_wave_dataset.py \
   --input-smooth-mode causal \
   --target-smooth-sec 0.08 \
   --target-smooth-mode centered \
+  --min-finite-ratio 0.995 \
+  --robust-clip-z 12 \
   --split-policy by_record \
   --train-ratio 0.7 \
   --val-ratio 0.15 \
@@ -432,6 +478,8 @@ python scripts/prepare_quasiperiodic_wave_dataset.py \
   --input-smooth-mode causal \
   --target-smooth-sec 0.08 \
   --target-smooth-mode centered \
+  --min-finite-ratio 0.995 \
+  --robust-clip-z 12 \
   --split-policy by_record \
   --train-ratio 0.7 \
   --val-ratio 0.15 \

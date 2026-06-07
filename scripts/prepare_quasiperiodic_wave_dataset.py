@@ -6,6 +6,7 @@ import csv
 import json
 import math
 import re
+import tarfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,14 @@ class SignalRecord:
     fs: float
     values: np.ndarray
     source_path: str
+
+
+@dataclass
+class PreparedRecord:
+    record: SignalRecord
+    fs: float
+    values: np.ndarray
+    quality: dict
 
 
 def _parse_csv_list(value: str | None) -> list[str]:
@@ -119,9 +128,94 @@ def _standardize(values: np.ndarray) -> np.ndarray:
     finite = np.isfinite(values)
     if not np.any(finite):
         raise ValueError("Signal has no finite samples.")
-    fill = float(np.nanmedian(values[finite]))
-    values = np.where(finite, values, fill)
+    if not np.all(finite):
+        idx = np.arange(values.size, dtype=np.float64)
+        values = values.copy()
+        values[~finite] = np.interp(idx[~finite], idx[finite], values[finite])
     return values
+
+
+def _finite_stats(values: np.ndarray) -> dict:
+    values = np.asarray(values, dtype=np.float64).reshape(-1)
+    finite = np.isfinite(values)
+    finite_values = values[finite]
+    out = {
+        "rows": int(values.size),
+        "finite_rows": int(np.sum(finite)),
+        "finite_ratio": float(np.mean(finite)) if values.size else 0.0,
+        "nan_rows": int(np.sum(np.isnan(values))),
+        "posinf_rows": int(np.sum(np.isposinf(values))),
+        "neginf_rows": int(np.sum(np.isneginf(values))),
+    }
+    if finite_values.size:
+        out.update(
+            {
+                "mean": float(np.mean(finite_values)),
+                "std": float(np.std(finite_values)),
+                "min": float(np.min(finite_values)),
+                "max": float(np.max(finite_values)),
+                "median": float(np.median(finite_values)),
+            }
+        )
+    else:
+        out.update({"mean": float("nan"), "std": float("nan"), "min": float("nan"), "max": float("nan"), "median": float("nan")})
+    return out
+
+
+def _robust_clip_bounds(values: np.ndarray, z: float) -> tuple[float, float] | None:
+    if z is None or z <= 0:
+        return None
+    x = np.asarray(values, dtype=np.float64).reshape(-1)
+    finite = x[np.isfinite(x)]
+    if finite.size == 0:
+        return None
+    median = float(np.median(finite))
+    mad = float(np.median(np.abs(finite - median)))
+    scale = 1.4826 * mad
+    if scale <= 1e-12:
+        scale = float(np.std(finite))
+    if scale <= 1e-12:
+        return None
+    return median - float(z) * scale, median + float(z) * scale
+
+
+def _clip_values(values: np.ndarray, args: argparse.Namespace) -> tuple[np.ndarray, dict]:
+    x = np.asarray(values, dtype=np.float64).reshape(-1).copy()
+    bounds: list[tuple[float, float, str]] = []
+    robust_bounds = _robust_clip_bounds(x, args.robust_clip_z)
+    if robust_bounds is not None:
+        bounds.append((robust_bounds[0], robust_bounds[1], "robust_z"))
+    finite = x[np.isfinite(x)]
+    if args.clip_quantile_low is not None or args.clip_quantile_high is not None:
+        if finite.size == 0:
+            raise ValueError("Cannot quantile-clip a signal with no finite samples.")
+        lo_q = 0.0 if args.clip_quantile_low is None else float(args.clip_quantile_low)
+        hi_q = 1.0 if args.clip_quantile_high is None else float(args.clip_quantile_high)
+        if not (0.0 <= lo_q < hi_q <= 1.0):
+            raise ValueError("Require 0 <= --clip-quantile-low < --clip-quantile-high <= 1.")
+        bounds.append((float(np.quantile(finite, lo_q)), float(np.quantile(finite, hi_q)), "quantile"))
+    if not bounds:
+        return x, {
+            "clip_mode": "none",
+            "clip_low_value": float("nan"),
+            "clip_high_value": float("nan"),
+            "clipped_low_rows": 0,
+            "clipped_high_rows": 0,
+        }
+
+    low = max(item[0] for item in bounds)
+    high = min(item[1] for item in bounds)
+    if not np.isfinite(low) or not np.isfinite(high) or high <= low:
+        raise ValueError(f"Invalid clipping bounds: low={low}, high={high}")
+    low_count = int(np.sum(x < low))
+    high_count = int(np.sum(x > high))
+    return np.clip(x, low, high), {
+        "clip_mode": "+".join(item[2] for item in bounds),
+        "clip_low_value": float(low),
+        "clip_high_value": float(high),
+        "clipped_low_rows": low_count,
+        "clipped_high_rows": high_count,
+    }
 
 
 def _transform(values: np.ndarray, transform: str, rms_window: int, smooth_mode: str, split: np.ndarray | None = None) -> np.ndarray:
@@ -303,21 +397,56 @@ def _read_mat_records(root: Path, dataset: str, wanted: list[str]) -> list[Signa
     return records
 
 
+def _is_archive(path: Path) -> bool:
+    name = path.name.lower()
+    return name.endswith(".zip") or name.endswith(".tar") or name.endswith(".tar.gz") or name.endswith(".tgz") or name.endswith(".tar.bz2") or name.endswith(".tbz2")
+
+
+def _archive_stem(path: Path) -> str:
+    name = path.name
+    for suffix in (".tar.gz", ".tar.bz2", ".tbz2", ".tgz", ".zip", ".tar"):
+        if name.lower().endswith(suffix):
+            return name[: -len(suffix)]
+    return path.stem
+
+
+def _safe_member_path(target: Path, member_name: str) -> Path:
+    root = target.resolve()
+    dest = (target / member_name).resolve()
+    try:
+        dest.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"Unsafe archive member path: {member_name}") from exc
+    return dest
+
+
+def _extract_archive(source: Path, target: Path) -> None:
+    if source.name.lower().endswith(".zip"):
+        with zipfile.ZipFile(source, "r") as zf:
+            for info in zf.infolist():
+                _safe_member_path(target, info.filename)
+            zf.extractall(target)
+        return
+    with tarfile.open(source, "r:*") as tf:
+        for member in tf.getmembers():
+            _safe_member_path(target, member.name)
+        tf.extractall(target)
+
+
 def _ensure_extracted(source: Path, extract_root: Path | None, temp_root: Path) -> Path:
     if source.is_dir():
         return source
-    if source.suffix.lower() != ".zip":
+    if not _is_archive(source):
         return source.parent
     if extract_root is None:
-        target = temp_root / source.stem
+        target = temp_root / _archive_stem(source)
     else:
-        target = extract_root / source.stem
+        target = extract_root / _archive_stem(source)
     marker = target / ".extract_complete"
     if marker.exists():
         return target
     target.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(source, "r") as zf:
-        zf.extractall(target)
+    _extract_archive(source, target)
     marker.write_text("ok\n", encoding="utf-8")
     return target
 
@@ -428,6 +557,124 @@ def _validate_record_split(count: int, args: argparse.Namespace) -> None:
         )
 
 
+def _quality_base(record: SignalRecord, original_index: int, fs: float) -> dict:
+    return {
+        "original_index": int(original_index),
+        "dataset": record.dataset,
+        "record_id": record.record_id,
+        "signal_name": record.signal_name,
+        "source_path": record.source_path,
+        "input_fs": float(fs),
+        "status": "ok",
+        "reason": "",
+    }
+
+
+def _prefix_stats(prefix: str, stats: dict) -> dict:
+    return {f"{prefix}_{key}": value for key, value in stats.items()}
+
+
+def _prepare_records(records: list[SignalRecord], args: argparse.Namespace) -> tuple[list[PreparedRecord], list[dict]]:
+    prepared: list[PreparedRecord] = []
+    quality_rows: list[dict] = []
+    min_duration_sec = float(args.min_duration_sec or 0.0)
+
+    for original_idx, record in enumerate(records):
+        fs = float(args.sample_rate) if args.sample_rate is not None else float(record.fs)
+        quality = _quality_base(record, original_idx, fs)
+        try:
+            if not np.isfinite(fs) or fs <= 0:
+                raise ValueError(f"Sample rate is unknown for {record.source_path}; pass --sample-rate.")
+
+            raw_values = np.asarray(record.values, dtype=np.float64).reshape(-1)
+            quality.update(_prefix_stats("original", _finite_stats(raw_values)))
+
+            values = _crop(raw_values, fs, args.time_start_sec, args.time_end_sec, args.max_duration_sec)
+            quality.update(_prefix_stats("cropped", _finite_stats(values)))
+            if min_duration_sec > 0 and values.size / fs < min_duration_sec:
+                raise ValueError(f"Duration {values.size / fs:.3f}s is shorter than --min-duration-sec {min_duration_sec:g}s.")
+
+            cropped_finite_ratio = float(quality["cropped_finite_ratio"])
+            if cropped_finite_ratio < float(args.min_finite_ratio):
+                raise ValueError(
+                    f"Finite ratio {cropped_finite_ratio:.6f} is below --min-finite-ratio {args.min_finite_ratio:g}."
+                )
+
+            values = _standardize(values)
+            quality["repaired_nonfinite_rows"] = int(quality["cropped_rows"] - quality["cropped_finite_rows"])
+            quality.update(_prefix_stats("repaired", _finite_stats(values)))
+
+            values, clip_stats = _clip_values(values, args)
+            quality.update(clip_stats)
+            quality.update(_prefix_stats("clipped", _finite_stats(values)))
+            if float(quality["clipped_std"]) < float(args.min_std):
+                raise ValueError(f"Standard deviation {quality['clipped_std']:.6g} is below --min-std {args.min_std:g}.")
+
+            values, fs = _resample(values, fs, args.resample_to)
+            quality["output_fs"] = float(fs)
+            quality.update(_prefix_stats("resampled", _finite_stats(values)))
+            if min_duration_sec > 0 and values.size / fs < min_duration_sec:
+                raise ValueError(f"Resampled duration {values.size / fs:.3f}s is shorter than --min-duration-sec {min_duration_sec:g}s.")
+
+            prepared.append(PreparedRecord(record=record, fs=fs, values=values, quality=quality))
+            quality_rows.append(quality)
+        except Exception as exc:
+            quality["status"] = "skipped" if args.bad_record_policy == "skip" else "error"
+            quality["reason"] = str(exc)
+            quality_rows.append(quality)
+            if args.bad_record_policy != "skip":
+                raise ValueError(
+                    f"Failed to prepare record dataset={record.dataset} record={record.record_id} "
+                    f"signal={record.signal_name} source={record.source_path}: {exc}"
+                ) from exc
+
+    if not prepared:
+        raise ValueError("No usable records remain after cleaning.")
+    return prepared, quality_rows
+
+
+def _write_quality_csv(path: Path, rows: list[dict]) -> None:
+    if not rows:
+        return
+    preferred = [
+        "original_index",
+        "prepared_index",
+        "status",
+        "reason",
+        "dataset",
+        "record_id",
+        "signal_name",
+        "segment_id",
+        "source_path",
+        "input_fs",
+        "output_fs",
+        "original_rows",
+        "cropped_rows",
+        "resampled_rows",
+        "duration_sec",
+        "original_finite_ratio",
+        "cropped_finite_ratio",
+        "repaired_nonfinite_rows",
+        "clip_mode",
+        "clip_low_value",
+        "clip_high_value",
+        "clipped_low_rows",
+        "clipped_high_rows",
+        "clipped_std",
+        "train_rows",
+        "val_rows",
+        "test_rows",
+    ]
+    keys = set().union(*(row.keys() for row in rows))
+    fieldnames = [key for key in preferred if key in keys] + sorted(keys - set(preferred))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Prepare quasi-periodic signal datasets for smooth long-horizon waveform forecasting.")
     parser.add_argument("--dataset", required=True, choices=["bidmc", "fantasia", "mitdb", "cwru", "mat", "generic_csv"])
@@ -448,6 +695,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input-smooth-mode", choices=["causal", "centered"], default="causal")
     parser.add_argument("--target-smooth-sec", type=float, default=2.0)
     parser.add_argument("--target-smooth-mode", choices=["causal", "centered"], default="centered")
+    parser.add_argument("--min-finite-ratio", type=float, default=0.0, help="Reject/skip records below this finite-sample ratio after cropping.")
+    parser.add_argument("--min-std", type=float, default=1e-12, help="Reject/skip near-constant records after cleaning and clipping.")
+    parser.add_argument("--min-duration-sec", type=float, default=0.0, help="Reject/skip records shorter than this duration after cropping/resampling.")
+    parser.add_argument("--bad-record-policy", choices=["error", "skip"], default="error", help="Whether bad records abort preparation or are skipped with a quality report row.")
+    parser.add_argument("--robust-clip-z", type=float, default=0.0, help="Optional robust MAD z-score clipping; 0 disables it.")
+    parser.add_argument("--clip-quantile-low", type=float, default=None, help="Optional lower quantile for clipping, e.g. 0.001.")
+    parser.add_argument("--clip-quantile-high", type=float, default=None, help="Optional upper quantile for clipping, e.g. 0.999.")
+    parser.add_argument("--quality-output", default=None, help="Optional per-record data-quality CSV path.")
     parser.add_argument("--split-policy", choices=["chronological", "by_record"], default="by_record")
     parser.add_argument("--train-ratio", type=float, default=0.7)
     parser.add_argument("--val-ratio", type=float, default=0.15)
@@ -473,9 +728,13 @@ def main() -> None:
 
     if args.output is None:
         raise ValueError("--output is required unless --list-signals is used.")
-    _validate_record_split(len(records), args)
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    quality_path = Path(args.quality_output) if args.quality_output else output_path.with_suffix(".quality.csv")
+
+    prepared_records, quality_rows = _prepare_records(records, args)
+    _validate_record_split(len(prepared_records), args)
+
     rows_written = 0
     segments = []
     fieldnames = ["time", "raw", "input_smooth", "target_smooth", "split", "segment_id", "record_id", "signal_name", "dataset", "fs"]
@@ -483,14 +742,11 @@ def main() -> None:
     with output_path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        for idx, record in enumerate(records):
-            fs = float(args.sample_rate) if args.sample_rate is not None else float(record.fs)
-            if not np.isfinite(fs) or fs <= 0:
-                raise ValueError(f"Sample rate is unknown for {record.source_path}; pass --sample-rate.")
-            values = _standardize(record.values)
-            values = _crop(values, fs, args.time_start_sec, args.time_end_sec, args.max_duration_sec)
-            values, fs = _resample(values, fs, args.resample_to)
-            split = _split_for_segment(idx, len(records), values.size, args)
+        for idx, item in enumerate(prepared_records):
+            record = item.record
+            fs = float(item.fs)
+            values = item.values
+            split = _split_for_segment(idx, len(prepared_records), values.size, args)
             rms_window = max(1, int(round(args.rms_window_sec * fs)))
             values = _transform(values, args.transform, rms_window, args.input_smooth_mode, split)
             input_window = max(1, int(round(args.input_smooth_sec * fs)))
@@ -515,6 +771,16 @@ def main() -> None:
                     }
                 )
             rows_written += int(values.size)
+            item.quality.update(
+                {
+                    "prepared_index": int(idx),
+                    "segment_id": segment_id,
+                    "duration_sec": float(values.size / fs),
+                    "train_rows": int(np.sum(split == "train")),
+                    "val_rows": int(np.sum(split == "val")),
+                    "test_rows": int(np.sum(split == "test")),
+                }
+            )
             segments.append(
                 {
                     "segment_id": segment_id,
@@ -531,6 +797,8 @@ def main() -> None:
                 }
             )
 
+    _write_quality_csv(quality_path, quality_rows)
+
     config = {
         "dataset": args.dataset,
         "sources": [str(Path(p).resolve()) for p in args.sources],
@@ -541,21 +809,35 @@ def main() -> None:
         "sample_rate": args.sample_rate,
         "resample_to": args.resample_to,
         "transform": args.transform,
+        "min_finite_ratio": args.min_finite_ratio,
+        "min_std": args.min_std,
+        "min_duration_sec": args.min_duration_sec,
+        "bad_record_policy": args.bad_record_policy,
+        "robust_clip_z": args.robust_clip_z,
+        "clip_quantile_low": args.clip_quantile_low,
+        "clip_quantile_high": args.clip_quantile_high,
         "input_smooth_sec": args.input_smooth_sec,
         "input_smooth_mode": args.input_smooth_mode,
         "target_smooth_sec": args.target_smooth_sec,
         "target_smooth_mode": args.target_smooth_mode,
         "smooth_isolated_by_split": True,
         "output_csv": str(output_path.resolve()),
+        "quality_csv": str(quality_path.resolve()),
         "rows_written": rows_written,
+        "num_discovered_records": len(records),
         "num_segments": len(segments),
+        "num_skipped_records": int(sum(1 for row in quality_rows if row.get("status") == "skipped")),
         "segments": segments,
     }
     config_path = output_path.with_suffix(".config.json")
     config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Prepared quasi-periodic waveform CSV: {output_path}")
     print(f"Config JSON: {config_path}")
+    print(f"Quality CSV: {quality_path}")
     print(f"Segments: {len(segments)}")
+    skipped = int(sum(1 for row in quality_rows if row.get("status") == "skipped"))
+    if skipped:
+        print(f"Skipped records: {skipped}")
     print(f"Rows written: {rows_written}")
     print("Input column: input_smooth")
     print("Target column: target_smooth")
