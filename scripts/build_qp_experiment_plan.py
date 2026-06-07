@@ -45,6 +45,14 @@ def _profile_command(csv_path: str, profile_dir: Path, args: argparse.Namespace)
     ]
     if args.profile_max_samples_per_segment > 0:
         parts.append(f"--max-samples-per-segment {args.profile_max_samples_per_segment}")
+    if args.profile_min_frequency_hz > 0:
+        parts.append(f"--min-frequency-hz {args.profile_min_frequency_hz}")
+    if args.profile_max_frequency_hz > 0:
+        parts.append(f"--max-frequency-hz {args.profile_max_frequency_hz}")
+    if args.profile_min_period_sec > 0:
+        parts.append(f"--min-period-sec {args.profile_min_period_sec}")
+    if args.profile_max_period_sec > 0:
+        parts.append(f"--max-period-sec {args.profile_max_period_sec}")
     return _format_command(parts)
 
 
@@ -126,6 +134,10 @@ def main() -> None:
     parser.add_argument("--profile-signal-cols", default="target_smooth")
     parser.add_argument("--profile-split-values", default="train")
     parser.add_argument("--profile-max-samples-per-segment", type=int, default=200_000)
+    parser.add_argument("--profile-min-frequency-hz", type=float, default=0.0)
+    parser.add_argument("--profile-max-frequency-hz", type=float, default=0.0)
+    parser.add_argument("--profile-min-period-sec", type=float, default=0.0)
+    parser.add_argument("--profile-max-period-sec", type=float, default=0.0)
     parser.add_argument("--input-col", default="input_smooth")
     parser.add_argument("--output-col", default="target_smooth")
     parser.add_argument("--raw-col", default="raw")

@@ -117,7 +117,9 @@ python scripts/analyze_quasiperiodic_profile.py \
   --segment-col segment_id \
   --split-col split \
   --split-values train \
-  --output-dir ./outputs/profile_bidmc_resp
+  --min-frequency-hz 0.04 \
+  --max-frequency-hz 1.0 \
+  --output-dir ./outputs/quasi_bidmc_resp_ma2s/profile
 ```
 
 The profile outputs are intended to support the paper's "predictability
@@ -143,7 +145,7 @@ For real datasets without a type column, split by profile labels:
 ```bash
 python scripts/split_quasiperiodic_dataset_by_type.py \
   --csv ./outputs/quasi_bidmc_resp_ma2s/bidmc_resp_ma2s.csv \
-  --profile-csv ./outputs/profile_bidmc_resp/profile_by_segment.csv \
+  --profile-csv ./outputs/quasi_bidmc_resp_ma2s/profile/profile_by_segment.csv \
   --segment-col segment_id \
   --output-dir ./outputs/quasi_bidmc_resp_ma2s/by_type \
   --drop-unknown
@@ -171,9 +173,9 @@ bash ./outputs/synthetic_qp4/plan/run_all_train_commands.sh
 
 ```bash
 python scripts/recommend_qp_config.py \
-  --profile-csv ./outputs/profile_bidmc_resp/profile_by_segment.csv \
+  --profile-csv ./outputs/quasi_bidmc_resp_ma2s/profile/profile_by_segment.csv \
   --prepared-csv ./outputs/quasi_bidmc_resp_ma2s/bidmc_resp_ma2s.csv \
-  --output-dir ./outputs/profile_bidmc_resp/recommend \
+  --output-dir ./outputs/quasi_bidmc_resp_ma2s/profile/recommend \
   --model-id-prefix bidmc_resp \
   --gpu 1
 ```
@@ -186,7 +188,7 @@ multi-frequency signals:
 ```bash
 python scripts/augment_quasiperiodic_dataset.py \
   --csv ./outputs/quasi_bidmc_resp_ma2s/bidmc_resp_ma2s.csv \
-  --profile-csv ./outputs/profile_bidmc_resp/profile_by_segment.csv \
+  --profile-csv ./outputs/quasi_bidmc_resp_ma2s/profile/profile_by_segment.csv \
   --output ./outputs/quasi_bidmc_resp_ma2s/bidmc_resp_ma2s_aug.csv \
   --raw-col raw \
   --segment-col segment_id \
@@ -221,10 +223,10 @@ Then generate commands including the enhanced model:
 
 ```bash
 python scripts/recommend_qp_config.py \
-  --profile-csv ./outputs/profile_bidmc_resp/profile_by_segment.csv \
+  --profile-csv ./outputs/quasi_bidmc_resp_ma2s/profile/profile_by_segment.csv \
   --prepared-csv ./outputs/quasi_bidmc_resp_ma2s/bidmc_resp_ma2s.csv \
   --enhanced-csv ./outputs/quasi_bidmc_resp_ma2s/bidmc_resp_ma2s_aug.csv \
-  --output-dir ./outputs/profile_bidmc_resp/recommend \
+  --output-dir ./outputs/quasi_bidmc_resp_ma2s/profile/recommend \
   --model-id-prefix bidmc_resp \
   --gpu 1
 ```

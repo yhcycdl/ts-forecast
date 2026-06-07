@@ -81,17 +81,18 @@ def _infer_segment_sample_rate(
     return _infer_sample_rate(df, time_col, sample_rate)
 
 
-def _clean_series(values: np.ndarray, max_samples: int) -> np.ndarray:
+def _clean_series(values: np.ndarray, max_samples: int) -> tuple[np.ndarray, int]:
     x = np.asarray(values, dtype=np.float64).reshape(-1)
     finite = np.isfinite(x)
     if not np.any(finite):
         raise ValueError("Signal has no finite values.")
     fill = float(np.nanmedian(x[finite]))
     x = np.where(finite, x, fill)
+    step = 1
     if max_samples > 0 and x.size > max_samples:
         step = int(math.ceil(x.size / max_samples))
         x = x[::step]
-    return x
+    return x, step
 
 
 def _moving_average(x: np.ndarray, window: int) -> np.ndarray:
@@ -108,39 +109,68 @@ def _moving_average(x: np.ndarray, window: int) -> np.ndarray:
     return (cumsum[right] - cumsum[left]) / count
 
 
-def _spectral_features(x: np.ndarray, fs: float) -> dict:
+def _empty_spectral_features(min_hz: float = 0.0, max_hz: float = 0.0) -> dict:
+    return {
+        "dominant_frequency_hz": 0.0,
+        "dominant_period_samples": 0.0,
+        "dominant_energy_ratio": 0.0,
+        "spectral_entropy": 1.0,
+        "multi_peak_count": 0,
+        "spectral_min_frequency_hz": float(min_hz),
+        "spectral_max_frequency_hz": float(max_hz),
+    }
+
+
+def _frequency_bounds(args: argparse.Namespace, fs: float) -> tuple[float, float]:
+    nyq = max(float(fs) * 0.5, 0.0)
+    min_hz = max(0.0, float(getattr(args, "min_frequency_hz", 0.0) or 0.0))
+    max_hz = float(getattr(args, "max_frequency_hz", 0.0) or 0.0)
+    min_period_sec = float(getattr(args, "min_period_sec", 0.0) or 0.0)
+    max_period_sec = float(getattr(args, "max_period_sec", 0.0) or 0.0)
+
+    if max_period_sec > 0:
+        min_hz = max(min_hz, 1.0 / max_period_sec)
+    if min_period_sec > 0:
+        period_max_hz = 1.0 / min_period_sec
+        max_hz = period_max_hz if max_hz <= 0 else min(max_hz, period_max_hz)
+
+    if max_hz <= 0:
+        max_hz = nyq
+    else:
+        max_hz = min(max_hz, nyq)
+    if min_hz >= max_hz:
+        raise ValueError(
+            "Invalid spectral frequency bounds after resolving period/frequency limits: "
+            f"min_hz={min_hz:g}, max_hz={max_hz:g}, fs={fs:g}."
+        )
+    return float(min_hz), float(max_hz)
+
+
+def _spectral_features(x: np.ndarray, fs: float, min_hz: float = 0.0, max_hz: float = 0.0) -> dict:
     y = x - np.mean(x)
     if y.size < 8 or np.std(y) <= 1e-12:
-        return {
-            "dominant_frequency_hz": 0.0,
-            "dominant_period_samples": 0.0,
-            "dominant_energy_ratio": 0.0,
-            "spectral_entropy": 1.0,
-            "multi_peak_count": 0,
-        }
+        return _empty_spectral_features(min_hz=min_hz, max_hz=max_hz)
 
     nperseg = min(y.size, 8192)
     freqs, power = signal.welch(y, fs=fs, nperseg=nperseg)
     if power.size <= 1:
-        return {
-            "dominant_frequency_hz": 0.0,
-            "dominant_period_samples": 0.0,
-            "dominant_energy_ratio": 0.0,
-            "spectral_entropy": 1.0,
-            "multi_peak_count": 0,
-        }
+        return _empty_spectral_features(min_hz=min_hz, max_hz=max_hz)
 
     freqs = freqs[1:]
     power = np.maximum(power[1:], 0.0)
+    valid = np.ones_like(power, dtype=bool)
+    if min_hz > 0:
+        valid &= freqs >= float(min_hz)
+    if max_hz > 0:
+        valid &= freqs <= float(max_hz)
+    if not np.any(valid):
+        return _empty_spectral_features(min_hz=min_hz, max_hz=max_hz)
+
+    freqs = freqs[valid]
+    power = power[valid]
     total = float(np.sum(power))
     if total <= 1e-20:
-        return {
-            "dominant_frequency_hz": 0.0,
-            "dominant_period_samples": 0.0,
-            "dominant_energy_ratio": 0.0,
-            "spectral_entropy": 1.0,
-            "multi_peak_count": 0,
-        }
+        return _empty_spectral_features(min_hz=min_hz, max_hz=max_hz)
 
     idx = int(np.argmax(power))
     f_dom = float(freqs[idx])
@@ -153,6 +183,8 @@ def _spectral_features(x: np.ndarray, fs: float) -> dict:
         "dominant_energy_ratio": float(power[idx] / total),
         "spectral_entropy": entropy,
         "multi_peak_count": int(peak_idx.size),
+        "spectral_min_frequency_hz": float(min_hz),
+        "spectral_max_frequency_hz": float(max_hz),
     }
 
 
@@ -288,23 +320,29 @@ def _recommend(signal_type: str, period_samples: float, fs: float) -> dict:
     }
 
 
-def analyze_segment(values: np.ndarray, fs: float, max_samples: int) -> dict:
-    x = _clean_series(values, max_samples=max_samples)
-    spec = _spectral_features(x, fs=fs)
-    acf = _acf_features(x, spec["dominant_period_samples"])
-    peaks = _peak_features(x, spec["dominant_period_samples"])
+def analyze_segment(values: np.ndarray, fs: float, max_samples: int, args: argparse.Namespace) -> dict:
+    x, sample_step = _clean_series(values, max_samples=max_samples)
+    effective_fs = float(fs) / max(1, int(sample_step))
+    min_hz, max_hz = _frequency_bounds(args, effective_fs)
+    spec = _spectral_features(x, fs=effective_fs, min_hz=min_hz, max_hz=max_hz)
+    period_analyzed = float(spec["dominant_period_samples"])
+    spec["dominant_period_samples"] = float(period_analyzed * max(1, int(sample_step))) if period_analyzed > 0 else 0.0
+    acf = _acf_features(x, period_analyzed)
+    peaks = _peak_features(x, period_analyzed)
     row = {
         "n_samples_analyzed": int(x.size),
         "sample_rate_hz": float(fs),
-        "duration_sec_analyzed": float(x.size / max(fs, 1e-12)),
+        "effective_sample_rate_hz": float(effective_fs),
+        "analysis_sample_step": int(sample_step),
+        "duration_sec_analyzed": float(x.size / max(effective_fs, 1e-12)),
         **spec,
         **acf,
         **peaks,
         "envelope_cv": _envelope_cv(x),
-        "residual_energy_ratio": _residual_energy_ratio(x, spec["dominant_period_samples"]),
+        "residual_energy_ratio": _residual_energy_ratio(x, period_analyzed),
     }
     row["dominant_period_sec"] = float(row["dominant_period_samples"] / max(fs, 1e-12))
-    row["cycles_analyzed"] = float(row["n_samples_analyzed"] / max(row["dominant_period_samples"], 1e-12))
+    row["cycles_analyzed"] = float(row["n_samples_analyzed"] / max(period_analyzed, 1e-12))
     signal_type = _classify(row)
     row["signal_type"] = signal_type
     row["predictability_score"] = _predictability_score(row)
@@ -366,6 +404,10 @@ def main() -> None:
     parser.add_argument("--split-values", default=None, help="Optional comma-separated split labels to include, e.g. train,test.")
     parser.add_argument("--max-rows", type=int, default=10_000_000)
     parser.add_argument("--max-samples-per-segment", type=int, default=200_000)
+    parser.add_argument("--min-frequency-hz", type=float, default=0.0, help="Ignore spectral peaks below this frequency; 0 disables.")
+    parser.add_argument("--max-frequency-hz", type=float, default=0.0, help="Ignore spectral peaks above this frequency; 0 uses Nyquist.")
+    parser.add_argument("--min-period-sec", type=float, default=0.0, help="Equivalent upper frequency bound; 0 disables.")
+    parser.add_argument("--max-period-sec", type=float, default=0.0, help="Equivalent lower frequency bound; 0 disables.")
     parser.add_argument("--output-dir", required=True)
     args = parser.parse_args()
 
@@ -413,6 +455,7 @@ def main() -> None:
                 seg_df[col].to_numpy(dtype=np.float64),
                 fs=fs,
                 max_samples=int(args.max_samples_per_segment),
+                args=args,
             )
             row["segment_id"] = str(segment_id)
             row["signal_col"] = col
@@ -449,6 +492,12 @@ def main() -> None:
         "signal_cols": signal_cols,
         "sample_rate_hz": global_fs,
         "fs_col": args.fs_col,
+        "frequency_bounds": {
+            "min_frequency_hz": args.min_frequency_hz,
+            "max_frequency_hz": args.max_frequency_hz,
+            "min_period_sec": args.min_period_sec,
+            "max_period_sec": args.max_period_sec,
+        },
         "segment_col": args.segment_col,
         "split_col": args.split_col,
         "split_values": _parse_cols(args.split_values),

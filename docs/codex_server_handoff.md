@@ -290,7 +290,6 @@ python run.py \
   --is_training 1 \
   --model_id smoke_bidmc_tcn \
   --model tcn_claude \
-  --data custom \
   --root_path ./outputs/quasi_bidmc_resp_ma2s \
   --data_path bidmc_resp_ma2s.csv \
   --features MS \
@@ -298,18 +297,26 @@ python run.py \
   --input_cols input_smooth \
   --output_cols target_smooth \
   --seq_len 250 \
-  --label_len 0 \
   --pred_len 100 \
   --enc_in 1 \
-  --dec_in 1 \
   --c_out 1 \
+  --out_in 1 \
+  --scaler channel \
   --train_epochs 3 \
   --batch_size 32 \
   --learning_rate 1e-4 \
-  --des smoke_bidmc \
+  --split_col split \
+  --segment_col segment_id \
+  --plot_raw_col raw \
+  --horizon 1000 \
   --itr 1 \
   --gpu 0
 ```
+
+如果用户终端里 `nvidia-smi` 正常，但 Codex 默认命令里看不到 GPU，
+优先判断是 Codex 命令沙箱没有暴露 `/dev/nvidia*`。正式训练要从普通
+shell 或非沙箱执行上下文启动；`timesnet` 环境里的 PyTorch CUDA 版本本身
+通常不是问题。
 
 如果 smoke 失败，优先检查：
 

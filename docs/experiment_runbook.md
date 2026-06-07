@@ -338,6 +338,8 @@ python scripts/analyze_quasiperiodic_profile.py \
   --segment-col segment_id \
   --split-col split \
   --split-values train \
+  --min-frequency-hz 0.04 \
+  --max-frequency-hz 1.0 \
   --output-dir ./outputs/quasi_bidmc_resp_ma2s/profile
 ```
 
@@ -410,6 +412,8 @@ python scripts/analyze_quasiperiodic_profile.py \
   --segment-col segment_id \
   --split-col split \
   --split-values train \
+  --min-frequency-hz 0.04 \
+  --max-frequency-hz 1.0 \
   --output-dir ./outputs/quasi_fantasia_resp_ma2s/profile
 
 python scripts/split_quasiperiodic_dataset_by_type.py \
@@ -497,6 +501,8 @@ python scripts/analyze_quasiperiodic_profile.py \
   --segment-col segment_id \
   --split-col split \
   --split-values train \
+  --min-frequency-hz 0.4 \
+  --max-frequency-hz 8.0 \
   --output-dir ./outputs/quasi_mitdb_mlii_ma008s/profile
 
 python scripts/split_quasiperiodic_dataset_by_type.py \

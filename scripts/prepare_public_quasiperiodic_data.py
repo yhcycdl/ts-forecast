@@ -20,6 +20,8 @@ class DatasetSpec:
     output_subdir: str
     output_csv: str
     min_duration_sec: float
+    profile_min_frequency_hz: float
+    profile_max_frequency_hz: float
 
 
 DATASETS: dict[str, DatasetSpec] = {
@@ -33,6 +35,8 @@ DATASETS: dict[str, DatasetSpec] = {
         output_subdir="quasi_bidmc_resp_ma2s",
         output_csv="bidmc_resp_ma2s.csv",
         min_duration_sec=120.0,
+        profile_min_frequency_hz=0.04,
+        profile_max_frequency_hz=1.0,
     ),
     "fantasia": DatasetSpec(
         name="fantasia",
@@ -44,6 +48,8 @@ DATASETS: dict[str, DatasetSpec] = {
         output_subdir="quasi_fantasia_resp_ma2s",
         output_csv="fantasia_resp_ma2s.csv",
         min_duration_sec=300.0,
+        profile_min_frequency_hz=0.04,
+        profile_max_frequency_hz=1.0,
     ),
     "mitdb": DatasetSpec(
         name="mitdb",
@@ -55,6 +61,8 @@ DATASETS: dict[str, DatasetSpec] = {
         output_subdir="quasi_mitdb_mlii_ma008s",
         output_csv="mitdb_mlii_ma008s.csv",
         min_duration_sec=300.0,
+        profile_min_frequency_hz=0.4,
+        profile_max_frequency_hz=8.0,
     ),
 }
 
@@ -170,7 +178,7 @@ def _prepare_command(
     return cmd, output_csv
 
 
-def _profile_command(output_csv: Path, repo_root: Path) -> list[str]:
+def _profile_command(output_csv: Path, spec: DatasetSpec, repo_root: Path) -> list[str]:
     profile_dir = output_csv.parent / "profile"
     return [
         sys.executable,
@@ -189,6 +197,10 @@ def _profile_command(output_csv: Path, repo_root: Path) -> list[str]:
         "split",
         "--split-values",
         "train",
+        "--min-frequency-hz",
+        str(spec.profile_min_frequency_hz),
+        "--max-frequency-hz",
+        str(spec.profile_max_frequency_hz),
         "--output-dir",
         str(profile_dir),
     ]
@@ -236,7 +248,7 @@ def main() -> None:
         prepare_cmd, output_csv = _prepare_command(spec, source, args, repo_root)
         _run(prepare_cmd, args.dry_run)
         if not args.skip_profile:
-            _run(_profile_command(output_csv, repo_root), args.dry_run)
+            _run(_profile_command(output_csv, spec, repo_root), args.dry_run)
 
 
 if __name__ == "__main__":
