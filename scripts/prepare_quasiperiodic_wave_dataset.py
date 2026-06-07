@@ -412,12 +412,28 @@ def _split_for_segment(index: int, count: int, length: int, args: argparse.Names
     return np.full(length, label, dtype=object)
 
 
+def _validate_record_split(count: int, args: argparse.Namespace) -> None:
+    if args.split_policy != "by_record":
+        return
+    train_end = int(count * args.train_ratio)
+    val_end = int(count * (args.train_ratio + args.val_ratio))
+    train_count = train_end
+    val_count = val_end - train_end
+    test_count = count - val_end
+    if train_count <= 0 or test_count <= 0 or (args.val_ratio > 0 and val_count <= 0):
+        raise ValueError(
+            "by_record split produced an empty split: "
+            f"records={count}, train={train_count}, val={val_count}, test={test_count}. "
+            "Use more records, lower --val-ratio, or use --split-policy chronological for a single/few long records."
+        )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Prepare quasi-periodic signal datasets for smooth long-horizon waveform forecasting.")
     parser.add_argument("--dataset", required=True, choices=["bidmc", "fantasia", "mitdb", "cwru", "mat", "generic_csv"])
     parser.add_argument("--sources", nargs="+", required=True, help="Input ZIP files or extracted directories.")
     parser.add_argument("--signal-names", default=None, help="Comma-separated signal names or substrings, e.g. RESP,PLETH or MLII.")
-    parser.add_argument("--output", required=True, help="Output long-format CSV path.")
+    parser.add_argument("--output", default=None, help="Output long-format CSV path; not required with --list-signals.")
     parser.add_argument("--extract-dir", default=None, help="Optional persistent extraction directory for ZIP sources.")
     parser.add_argument("--list-signals", action="store_true", help="Only list discovered records/signals; do not write CSV.")
     parser.add_argument("--record-limit", type=int, default=0, help="Use only the first N discovered records/signals; 0 means all.")
@@ -440,7 +456,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = _build_parser().parse_args()
-    output_path = Path(args.output)
     with TemporaryDirectory() as tmp:
         records = _load_records(args, Path(tmp))
 
@@ -456,6 +471,10 @@ def main() -> None:
             )
         return
 
+    if args.output is None:
+        raise ValueError("--output is required unless --list-signals is used.")
+    _validate_record_split(len(records), args)
+    output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     rows_written = 0
     segments = []

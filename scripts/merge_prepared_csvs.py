@@ -43,9 +43,12 @@ def main() -> None:
                     raise ValueError(f"Header mismatch in {path}. Expected {base_header}, got {header}")
 
                 assert writer is not None
-                segment_id = path.stem
+                source_id = path.stem
                 for row in reader:
-                    row[args.segment_col] = segment_id
+                    original_segment = str(row.get(args.segment_col, "")).strip()
+                    row[args.segment_col] = (
+                        f"{source_id}_{original_segment}" if original_segment else source_id
+                    )
                     writer.writerow(row)
                     rows_written += 1
 
