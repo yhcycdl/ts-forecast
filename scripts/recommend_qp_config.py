@@ -104,11 +104,21 @@ def _aggregate_config(
     output_cycles: int | None,
     stride_cycles: float,
     round_to: int,
+    signal_type_override: str | None = None,
 ) -> dict:
-    signal_type = _mode_string(profile, "signal_type", "stable_single_freq")
+    signal_type = signal_type_override or _mode_string(profile, "signal_type", "stable_single_freq")
+    if signal_type not in TYPE_DEFAULT_CYCLES:
+        raise ValueError(
+            f"Unsupported signal type {signal_type!r}. "
+            f"Expected one of: {', '.join(sorted(TYPE_DEFAULT_CYCLES))}."
+        )
     default_in, default_out = TYPE_DEFAULT_CYCLES.get(signal_type, (10, 3))
-    in_cycles = int(input_cycles if input_cycles is not None else _median_positive(profile, "input_cycles", default_in))
-    out_cycles = int(output_cycles if output_cycles is not None else _median_positive(profile, "output_cycles", default_out))
+    if signal_type_override:
+        in_cycles = int(input_cycles if input_cycles is not None else default_in)
+        out_cycles = int(output_cycles if output_cycles is not None else default_out)
+    else:
+        in_cycles = int(input_cycles if input_cycles is not None else _median_positive(profile, "input_cycles", default_in))
+        out_cycles = int(output_cycles if output_cycles is not None else _median_positive(profile, "output_cycles", default_out))
 
     period = _median_positive(profile, "dominant_period_samples", 128.0)
     fs = _median_positive(profile, "sample_rate_hz", 1.0)
@@ -383,6 +393,11 @@ def main() -> None:
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--train-epochs", type=int, default=40)
     parser.add_argument("--gpu", type=int, default=0)
+    parser.add_argument(
+        "--signal-type-override",
+        default=None,
+        help="Use this known signal type instead of the profile's automatic signal_type mode.",
+    )
     parser.add_argument("--include-smoothpec", action="store_true", help="Always include raw->smooth SmoothPECNet command.")
     parser.add_argument("--include-legacy-baselines", action="store_true",
                         help="Include restored GRU/CNNLSTM/CRNN/InceptionTime/FastTCN/SpectralCNN/TimeMixer baselines.")
@@ -402,10 +417,23 @@ def main() -> None:
         output_cycles=args.output_cycles,
         stride_cycles=args.stride_cycles,
         round_to=args.round_to,
+        signal_type_override=args.signal_type_override,
     )
 
     type_configs = []
-    if "signal_type" in profile.columns:
+    if args.signal_type_override:
+        type_configs.append(
+            _aggregate_config(
+                profile,
+                label=str(args.signal_type_override),
+                input_cycles=args.input_cycles,
+                output_cycles=args.output_cycles,
+                stride_cycles=args.stride_cycles,
+                round_to=args.round_to,
+                signal_type_override=args.signal_type_override,
+            )
+        )
+    elif "signal_type" in profile.columns:
         for signal_type, group in profile.groupby("signal_type", sort=False):
             type_configs.append(
                 _aggregate_config(

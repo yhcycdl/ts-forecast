@@ -64,8 +64,8 @@ class GlobalScaler:
 
 
 def load_dataframe(csv_path: str, max_rows=None):
-    df = pd.read_csv(csv_path)
-    if max_rows is not None:
+    df = pd.read_csv(csv_path, low_memory=False)
+    if max_rows is not None and int(max_rows) > 0:
         df = df.iloc[:max_rows]
     return df
 
@@ -133,4 +133,3 @@ def count_windows(length: int, seq_len: int, pred_len: int, stride: int) -> int:
     stride = int(stride)
     n = (length - seq_len - pred_len) // stride + 1
     return max(0, int(n))
-

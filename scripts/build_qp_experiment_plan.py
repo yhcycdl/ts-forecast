@@ -102,6 +102,7 @@ def _recommend_command(
         f"--learning-rate {args.learning_rate}",
         f"--train-epochs {args.train_epochs}",
         f"--gpu {args.gpu}",
+        f"--signal-type-override {_q(signal_type)}",
     ]
     if args.include_smoothpec:
         parts.append("--include-smoothpec")
